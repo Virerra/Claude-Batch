@@ -965,12 +965,28 @@
       inFlightController.abort();
       inFlightController = null;
     }
+
+    // Any row still marked "processing" at this point was interrupted mid-flight
+    // (aborted fetch or a backoff wait cut short). Without this, that row would be
+    // permanently invisible to processNext, which only ever picks up "pending" rows
+    // — so the queue would look stuck forever even after clicking Start again.
+    let resetCount = 0;
+    queue.forEach(item => {
+      if (item.status === 'processing') {
+        item.status = 'pending';
+        item.error = null;
+        resetCount++;
+      }
+    });
+    if (resetCount > 0) renderQueue();
+
     els.runBtn.textContent = 'Start queue';
     els.runBtn.classList.remove('stop');
     els.runBtn.classList.add('go');
     els.clearAll.disabled = false;
     setControlsDisabled(false);
     refreshKeyStatus();
+    updateEstimate();
   }
 
   function setControlsDisabled(disabled){
@@ -1002,9 +1018,9 @@
     const result = await callClaudeWithRetry(next);
 
     if (!isRunning) {
-      // A stop/abort happened while this call was in flight. Leave the row as the
-      // retry helper left it (pending if it was reset for a retry, or whatever it
-      // already was) rather than overwriting state from a run that's no longer active.
+      // stopRun() already reset this row back to 'pending' (it resets any row left
+      // mid-flight). Just re-render to reflect that — don't touch next.status here,
+      // or we'd risk overwriting the reset with stale state from this aborted call.
       renderQueue();
       return;
     }
