@@ -2,7 +2,7 @@
 
 A free, open-source tool that queues up requests to Claude and fires them off at a pace you control — so you stop hitting rate limits and stop babysitting a loop.
 
-**[Try it live →](https://virerra.github.io/Claude-Batch/)** or just download `index.html` and open it locally, no setup required.*
+**[Try it live →](https://virerra.github.io/Claude-Batch/)** — or just download `index.html` and open it locally, no setup required.*
 
 ## Why
 
@@ -11,10 +11,23 @@ If you're running a spreadsheet through Claude row by row, summarizing a folder 
 ## What it does
 
 - **Add requests in bulk** — paste in a block of text, one prompt per line, and they're all queued.
+- **Build a queue from a spreadsheet** — upload a CSV or Excel file, write a template referencing column names (e.g. `Summarize this ticket from {Name}: {Notes}`), and Claude Batch generates one queued, paced request per row. Only the columns your template references are sent — leaving the rest out keeps each request small and on-topic.
 - **Set the pace** — pick an interval (e.g. one request every 45 seconds) and Claude Batch paces itself accordingly.
 - **Watch it run** — every request shows live status (pending → processing → completed/failed) with the response as it comes in.
-- **Export your results** — download everything as JSON, CSV, or plain text when the queue finishes.
+- **Export your results** — download everything as JSON, CSV, or plain text when the queue finishes. If your prompts came from a spreadsheet, the original columns are included in the export so you can re-merge results back into your data.
 - **Bring your own key** — you paste in your own Anthropic API key. It's used only to call `api.anthropic.com` directly from your browser. Nothing is sent anywhere else, and there is no backend.
+
+## Working from a spreadsheet
+
+If you're processing many rows of structured data — support tickets, survey responses, a list of items to classify — uploading a spreadsheet is usually more efficient than typing prompts by hand, because you control exactly which columns get sent to Claude.
+
+1. Switch to the **"From spreadsheet"** tab in the composer.
+2. Drop in a `.csv`, `.xlsx`, or `.xls` file (first sheet is used; capped at 5,000 rows to keep the browser responsive).
+3. Click the column names that appear to insert them into the template box as `{ColumnName}` placeholders. Only reference the columns your prompt actually needs — leaving the rest out is what keeps each request's token footprint small.
+4. Check the live preview, which shows what row 1's prompt will actually look like.
+5. Click **"Add rows to queue"** — one queued, paced request is created per row.
+
+A blank cell in any row is sent as an empty string rather than breaking the template, so a sparse spreadsheet won't derail the batch.
 
 ## What it deliberately doesn't do
 
@@ -63,6 +76,8 @@ What's covered: bulk-adding prompts, pacing (the interval between requests is ac
 - Requests are sent one at a time, in the order added — there's no concurrency, by design, since pacing is the entire point.
 - If you close the tab mid-run, the queue is gone. Export early and often if a batch matters to you.
 - The visual progress bar on a "processing" row is a soft pulse, not a literal countdown — actual API response time varies and isn't known in advance.
+- Spreadsheet uploads only read the first sheet of a workbook, and cap at 5,000 rows.
+- Spreadsheet parsing depends on [SheetJS](https://sheetjs.com/), loaded from their CDN, pinned to a fixed version for stability. Everything else has zero external dependencies.
 
 ## Contributing
 
