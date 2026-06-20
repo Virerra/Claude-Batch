@@ -14,6 +14,7 @@ If you're running a spreadsheet through Claude row by row, summarizing a folder 
 - **Build a queue from a spreadsheet** — upload a CSV or Excel file, write a template referencing column names (e.g. `Summarize this ticket from {Name}: {Notes}`), and Claude Batch generates one queued, paced request per row. Only the columns your template references are sent — leaving the rest out keeps each request small and on-topic.
 - **Set the pace** — pick an interval (e.g. one request every 45 seconds) and Claude Batch paces itself accordingly.
 - **Watch it run** — every request shows live status (pending → processing → completed/failed) with the response as it comes in.
+- **Reorder before you run** — drag any pending row by its handle (⠿) to change the order it'll be sent in. Reordering is only available for not-yet-started rows, and is disabled while a run is active.
 - **Export your results** — download everything as JSON, CSV, or plain text when the queue finishes. If your prompts came from a spreadsheet, the original columns are included in the export so you can re-merge results back into your data.
 - **Bring your own key** — you paste in your own Anthropic API key. It's used only to call `api.anthropic.com` directly from your browser. Nothing is sent anywhere else, and there is no backend.
 
