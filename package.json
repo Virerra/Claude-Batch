@@ -1,0 +1,12 @@
+{
+  "name": "claude-batch",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Test tooling for Claude Batch. The app itself (index.html) has no dependencies.",
+  "scripts": {
+    "test": "node test-harness.js"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}

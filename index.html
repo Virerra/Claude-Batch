@@ -1,0 +1,1224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Batch — queue requests, pace them yourself</title>
+<meta name="description" content="A free, open-source tool that queues up requests to Claude and fires them at a controlled pace, so you never hit a rate limit again. Bring your own API key, runs entirely in your browser.">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --bg:#FAF6F1;
+    --surface:#FFFFFF;
+    --surface-sunk:#F3ECE3;
+    --ink:#211C16;
+    --ink-soft:#6B6258;
+    --ink-faint:#9C9286;
+    --line:#E8DFD3;
+    --line-strong:#D8CCBC;
+    --orange:#D97757;
+    --orange-deep:#BF5A3D;
+    --orange-wash:#FBEAE1;
+    --amber:#C08A3E;
+    --amber-wash:#FAF0DD;
+    --moss:#5F8566;
+    --moss-wash:#E8F0E6;
+    --brick:#B3503F;
+    --brick-wash:#FBE9E4;
+    --radius:10px;
+    --shadow-sm:0 1px 2px rgba(33,28,22,0.06);
+    --shadow-md:0 4px 16px rgba(33,28,22,0.08);
+    --font-display:'Fraunces', serif;
+    --font-body:'Inter', system-ui, sans-serif;
+    --font-mono:'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  *{box-sizing:border-box;}
+  html{-webkit-font-smoothing:antialiased;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--font-body);
+    line-height:1.5;
+  }
+  ::selection{background:var(--orange-wash); color:var(--orange-deep);}
+
+  a{color:var(--orange-deep);}
+
+  .shell{
+    max-width:1180px;
+    margin:0 auto;
+    padding:0 28px 80px;
+  }
+
+  /* ---------- Header ---------- */
+  header.top{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:24px;
+    padding:44px 0 32px;
+    border-bottom:1px solid var(--line);
+    margin-bottom:32px;
+  }
+  .brand{display:flex; align-items:center; gap:14px;}
+  .mark{
+    width:38px; height:38px; border-radius:9px;
+    background:var(--orange);
+    display:flex; align-items:center; justify-content:center;
+    flex:none;
+    box-shadow:var(--shadow-sm);
+  }
+  .mark svg{width:20px; height:20px;}
+  h1{
+    font-family:var(--font-display);
+    font-weight:600;
+    font-size:25px;
+    letter-spacing:-0.01em;
+    margin:0;
+  }
+  .tagline{
+    font-size:13.5px;
+    color:var(--ink-soft);
+    margin-top:2px;
+  }
+  .top-right{
+    text-align:right;
+    font-size:12.5px;
+    color:var(--ink-faint);
+    padding-top:8px;
+    max-width:280px;
+  }
+  .top-right a{color:var(--ink-soft); text-decoration:underline; text-decoration-color:var(--line-strong); text-underline-offset:2px;}
+
+  /* ---------- API key bar ---------- */
+  .keybar{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    padding:11px 14px;
+    margin-bottom:28px;
+    box-shadow:var(--shadow-sm);
+  }
+  .keybar .dot{
+    width:7px; height:7px; border-radius:50%;
+    background:var(--brick);
+    flex:none;
+    transition:background .2s;
+  }
+  .keybar.connected .dot{background:var(--moss);}
+  .keybar input{
+    flex:1;
+    border:none;
+    background:transparent;
+    font-family:var(--font-mono);
+    font-size:13px;
+    color:var(--ink);
+    outline:none;
+    min-width:0;
+  }
+  .keybar input::placeholder{color:var(--ink-faint); font-family:var(--font-body);}
+  .keybar label.toggle{
+    display:flex; align-items:center; gap:5px;
+    font-size:12px; color:var(--ink-faint);
+    cursor:pointer;
+    user-select:none;
+    flex:none;
+  }
+  .keybar .status-word{
+    font-size:12px;
+    color:var(--ink-faint);
+    flex:none;
+    font-variant-numeric:tabular-nums;
+  }
+  .keybar.connected .status-word{color:var(--moss);}
+
+  /* ---------- Layout grid ---------- */
+  .grid{
+    display:grid;
+    grid-template-columns:340px 1fr;
+    gap:24px;
+    align-items:start;
+  }
+  @media (max-width:880px){
+    .grid{grid-template-columns:1fr;}
+  }
+
+  .panel{
+    background:var(--surface);
+    border:1px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow-sm);
+  }
+  .panel-head{
+    padding:16px 18px 0;
+  }
+  .panel-head h2{
+    font-size:11.5px;
+    text-transform:uppercase;
+    letter-spacing:0.07em;
+    color:var(--ink-faint);
+    font-weight:600;
+    margin:0 0 4px;
+  }
+
+  /* ---------- Left: composer ---------- */
+  .composer{position:sticky; top:20px;}
+  .composer-body{padding:14px 18px 18px;}
+
+  textarea#prompt-input{
+    width:100%;
+    min-height:108px;
+    resize:vertical;
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:10px 12px;
+    font-family:var(--font-mono);
+    font-size:13px;
+    line-height:1.5;
+    color:var(--ink);
+    background:var(--surface-sunk);
+    outline:none;
+    transition:border-color .15s;
+  }
+  textarea#prompt-input:focus{border-color:var(--orange);}
+  textarea#prompt-input::placeholder{color:var(--ink-faint); font-family:var(--font-body);}
+
+  .composer-hint{
+    font-size:11.5px;
+    color:var(--ink-faint);
+    margin-top:6px;
+  }
+  .composer-hint kbd{
+    font-family:var(--font-mono);
+    background:var(--surface-sunk);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:0 4px;
+    font-size:10.5px;
+  }
+
+  .btn-row{display:flex; gap:8px; margin-top:10px;}
+  button{
+    font-family:var(--font-body);
+    font-weight:600;
+    font-size:13px;
+    border-radius:7px;
+    border:1px solid transparent;
+    padding:9px 14px;
+    cursor:pointer;
+    transition:filter .12s, background .12s, border-color .12s;
+  }
+  button:disabled{opacity:.45; cursor:not-allowed;}
+  .btn-primary{
+    background:var(--orange);
+    color:#fff;
+    flex:1;
+  }
+  .btn-primary:hover:not(:disabled){filter:brightness(0.94);}
+  .btn-ghost{
+    background:transparent;
+    color:var(--ink-soft);
+    border-color:var(--line-strong);
+  }
+  .btn-ghost:hover:not(:disabled){background:var(--surface-sunk);}
+
+  hr.sep{border:none; border-top:1px solid var(--line); margin:18px 0;}
+
+  /* ---------- System prompt (collapsible) ---------- */
+  details.adv{font-size:13px;}
+  details.adv summary{
+    cursor:pointer;
+    font-weight:600;
+    font-size:11.5px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--ink-faint);
+    list-style:none;
+    display:flex;
+    align-items:center;
+    gap:6px;
+  }
+  details.adv summary::-webkit-details-marker{display:none;}
+  details.adv summary::before{
+    content:'▸';
+    font-size:10px;
+    transition:transform .15s;
+    color:var(--ink-faint);
+  }
+  details.adv[open] summary::before{transform:rotate(90deg);}
+  details.adv .adv-body{padding-top:10px;}
+
+  select, input[type="number"], input[type="text"]{
+    font-family:var(--font-body);
+    font-size:13px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:7px 9px;
+    background:var(--surface);
+    color:var(--ink);
+    outline:none;
+  }
+  select:focus, input:focus{border-color:var(--orange);}
+  textarea.sys{
+    width:100%;
+    min-height:60px;
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    border:1px solid var(--line);
+    border-radius:7px;
+    padding:8px 10px;
+    background:var(--surface-sunk);
+    outline:none;
+    resize:vertical;
+  }
+  .field-row{display:flex; flex-direction:column; gap:5px; margin-bottom:12px;}
+  .field-row label{font-size:12px; font-weight:600; color:var(--ink-soft);}
+  .field-row .field-note{font-size:11px; color:var(--ink-faint); font-weight:400;}
+
+  /* ---------- Pace dial (signature element) ---------- */
+  .pace-block{padding:14px 18px 18px; border-top:1px solid var(--line);}
+  .pace-value{
+    display:flex;
+    align-items:baseline;
+    gap:6px;
+    margin-bottom:10px;
+  }
+  .pace-value .num{
+    font-family:var(--font-display);
+    font-size:30px;
+    font-weight:600;
+    color:var(--orange-deep);
+    line-height:1;
+    font-variant-numeric:tabular-nums;
+  }
+  .pace-value .unit{font-size:13px; color:var(--ink-soft);}
+
+  .pace-strip{
+    display:flex;
+    align-items:flex-end;
+    gap:3px;
+    height:34px;
+    margin-bottom:10px;
+  }
+  .pace-strip .tick{
+    flex:1;
+    background:var(--surface-sunk);
+    border-radius:2px;
+    height:10px;
+    transition:height .15s, background .15s;
+  }
+  .pace-strip .tick.active{background:var(--orange); }
+
+  input[type="range"]{
+    -webkit-appearance:none;
+    width:100%;
+    height:4px;
+    border-radius:2px;
+    background:var(--line-strong);
+    outline:none;
+    margin:6px 0;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance:none;
+    width:16px; height:16px;
+    border-radius:50%;
+    background:var(--orange);
+    border:2px solid #fff;
+    box-shadow:0 0 0 1px var(--orange);
+    cursor:pointer;
+  }
+  input[type="range"]::-moz-range-thumb{
+    width:14px; height:14px;
+    border-radius:50%;
+    background:var(--orange);
+    border:2px solid #fff;
+    box-shadow:0 0 0 1px var(--orange);
+    cursor:pointer;
+  }
+  .pace-labels{display:flex; justify-content:space-between; font-size:10.5px; color:var(--ink-faint);}
+  .pace-est{font-size:11.5px; color:var(--ink-faint); margin-top:10px;}
+  .pace-est strong{color:var(--ink-soft); font-weight:600;}
+
+  /* ---------- Run controls ---------- */
+  .run-block{padding:14px 18px 18px; border-top:1px solid var(--line);}
+  .run-btn{
+    width:100%;
+    padding:11px;
+    font-size:14px;
+    border-radius:8px;
+  }
+  .run-btn.go{background:var(--orange); color:#fff;}
+  .run-btn.go:hover:not(:disabled){filter:brightness(0.94);}
+  .run-btn.stop{background:var(--brick-wash); color:var(--brick); border-color:transparent;}
+  .run-btn.stop:hover:not(:disabled){filter:brightness(0.96);}
+  .run-meta{display:flex; justify-content:space-between; font-size:11.5px; color:var(--ink-faint); margin-top:8px;}
+
+  /* ---------- Right: queue ---------- */
+  .queue-panel{min-height:480px; display:flex; flex-direction:column;}
+  .queue-head{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:16px 18px;
+    border-bottom:1px solid var(--line);
+  }
+  .queue-head h2{
+    font-size:11.5px;
+    text-transform:uppercase;
+    letter-spacing:0.07em;
+    color:var(--ink-faint);
+    font-weight:600;
+    margin:0;
+  }
+  .queue-stats{display:flex; gap:14px; font-size:12px; color:var(--ink-soft); font-variant-numeric:tabular-nums;}
+  .queue-stats span{display:flex; align-items:center; gap:5px;}
+  .queue-stats .swatch{width:7px; height:7px; border-radius:50%;}
+
+  .export-row{
+    display:flex;
+    gap:8px;
+    padding:10px 18px;
+    border-bottom:1px solid var(--line);
+    background:var(--surface-sunk);
+  }
+  .export-row button{font-size:12px; padding:6px 11px;}
+
+  .queue-list{flex:1; overflow:visible;}
+  .empty-state{
+    padding:64px 28px;
+    text-align:center;
+    color:var(--ink-faint);
+  }
+  .empty-state .glyph{
+    font-family:var(--font-display);
+    font-size:32px;
+    color:var(--line-strong);
+    margin-bottom:10px;
+  }
+  .empty-state p{font-size:13.5px; max-width:340px; margin:0 auto; line-height:1.6;}
+
+  .row{
+    display:grid;
+    grid-template-columns:28px 1fr 110px 32px;
+    gap:12px;
+    align-items:start;
+    padding:14px 18px;
+    border-bottom:1px solid var(--line);
+    position:relative;
+  }
+  .row:last-child{border-bottom:none;}
+  .row-index{
+    font-family:var(--font-mono);
+    font-size:11px;
+    color:var(--ink-faint);
+    padding-top:2px;
+    font-variant-numeric:tabular-nums;
+  }
+  .row-content{min-width:0;}
+  .row-prompt{
+    font-family:var(--font-mono);
+    font-size:12.5px;
+    color:var(--ink);
+    white-space:pre-wrap;
+    word-break:break-word;
+    max-height:4.6em;
+    overflow:hidden;
+    line-height:1.5;
+  }
+  .row-prompt.expanded{max-height:none;}
+  .row-toggle{
+    font-size:11px;
+    color:var(--orange-deep);
+    cursor:pointer;
+    margin-top:3px;
+    font-weight:600;
+    display:inline-block;
+  }
+  .row-response{
+    margin-top:9px;
+    padding:10px 12px;
+    background:var(--surface-sunk);
+    border-left:2px solid var(--line-strong);
+    border-radius:0 6px 6px 0;
+    font-size:12.5px;
+    line-height:1.55;
+    white-space:pre-wrap;
+    word-break:break-word;
+    color:var(--ink);
+  }
+  .row-response.error{
+    background:var(--brick-wash);
+    border-left-color:var(--brick);
+    color:var(--brick);
+    font-family:var(--font-mono);
+    font-size:12px;
+  }
+  .row-progress{
+    height:2px;
+    background:var(--line);
+    border-radius:1px;
+    margin-top:8px;
+    overflow:hidden;
+  }
+  .row-progress-fill{
+    height:100%;
+    background:var(--orange);
+    width:0%;
+    transition:width linear;
+  }
+
+  .status-badge{
+    font-family:var(--font-mono);
+    font-size:10.5px;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:0.04em;
+    padding:3px 8px;
+    border-radius:20px;
+    text-align:center;
+    white-space:nowrap;
+    justify-self:start;
+    margin-top:1px;
+  }
+  .status-badge.pending{background:var(--amber-wash); color:var(--amber);}
+  .status-badge.processing{background:var(--orange-wash); color:var(--orange-deep);}
+  .status-badge.completed{background:var(--moss-wash); color:var(--moss);}
+  .status-badge.failed{background:var(--brick-wash); color:var(--brick);}
+
+  .row-remove{
+    background:none;
+    border:none;
+    color:var(--ink-faint);
+    font-size:16px;
+    line-height:1;
+    cursor:pointer;
+    padding:2px 6px;
+    border-radius:5px;
+  }
+  .row-remove:hover{background:var(--brick-wash); color:var(--brick);}
+
+  footer.site{
+    text-align:center;
+    padding-top:48px;
+    font-size:12px;
+    color:var(--ink-faint);
+  }
+  footer.site a{color:var(--ink-soft);}
+
+  .visually-hidden{
+    position:absolute; width:1px; height:1px;
+    overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap;
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none !important; animation:none !important;}
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="top">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5 18L9.5 6h2.2L7.2 18H5zm7 0L16.5 6h2.2L14.2 18H12z" fill="#FFFFFF"/>
+        </svg>
+      </div>
+      <div>
+        <h1>Claude Batch</h1>
+        <div class="tagline">Queue your requests. Set the pace. Walk away.</div>
+      </div>
+    </div>
+    <div class="top-right">
+      Free &amp; open source, MIT licensed. Runs entirely in your browser — your key and your prompts never touch a server.
+      <br><a href="https://github.com/Virerra/Claude-Batch" target="_blank" rel="noopener">View source on GitHub</a>
+    </div>
+  </header>
+
+  <div class="keybar" id="keybar">
+    <span class="dot" id="key-dot" aria-hidden="true"></span>
+    <input type="password" id="api-key" placeholder="sk-ant-api03-… paste your Anthropic API key" autocomplete="off" spellcheck="false">
+    <label class="toggle"><input type="checkbox" id="key-show"> show</label>
+    <label class="toggle"><input type="checkbox" id="key-remember" checked> remember in this browser</label>
+    <span class="status-word" id="key-status">not connected</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- LEFT: Composer -->
+    <div class="panel composer">
+      <div class="panel-head">
+        <h2>Add to queue</h2>
+      </div>
+      <div class="composer-body">
+        <textarea id="prompt-input" placeholder="Type a request, or paste many at once — one per line — to add them all."></textarea>
+        <div class="composer-hint">One prompt per line. <kbd>⌘/Ctrl + Enter</kbd> to add.</div>
+        <div class="btn-row">
+          <button class="btn-primary" id="add-btn">Add to queue</button>
+          <button class="btn-ghost" id="clear-input-btn" title="Clear the text box">Clear</button>
+        </div>
+
+        <hr class="sep">
+
+        <details class="adv">
+          <summary>Model &amp; system prompt</summary>
+          <div class="adv-body">
+            <div class="field-row">
+              <label for="model-select">Model</label>
+              <select id="model-select">
+                <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6</option>
+                <option value="claude-opus-4-7">Claude Opus 4.7</option>
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <label for="max-tokens">Max output tokens</label>
+              <input type="number" id="max-tokens" value="1024" min="1" max="64000" style="width:100%">
+            </div>
+            <div class="field-row">
+              <label for="sys-prompt">System prompt <span class="field-note">— applied to every request in the queue</span></label>
+              <textarea class="sys" id="sys-prompt" placeholder="Optional. e.g. 'Respond with valid JSON only.'"></textarea>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="pace-block">
+        <div class="panel-head" style="padding:0 0 10px;">
+          <h2>Pace</h2>
+        </div>
+        <div class="pace-value">
+          <span class="num" id="pace-num">45</span>
+          <span class="unit">seconds between requests</span>
+        </div>
+        <div class="pace-strip" id="pace-strip" aria-hidden="true"></div>
+        <input type="range" id="pace-slider" min="1" max="180" value="45" aria-label="Seconds between requests">
+        <div class="pace-labels"><span>1s — fast</span><span>180s — gentle</span></div>
+        <div class="pace-est" id="pace-estimate">Add requests to see an estimated finish time.</div>
+      </div>
+
+      <div class="run-block">
+        <button class="run-btn go" id="run-btn" disabled>Start queue</button>
+        <div class="run-meta">
+          <span id="run-progress-text">0 of 0 complete</span>
+          <span id="run-elapsed"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Queue -->
+    <div class="panel queue-panel">
+      <div class="queue-head">
+        <h2>Queue</h2>
+        <div class="queue-stats" id="queue-stats">
+          <span><span class="swatch" style="background:var(--amber)"></span><span id="stat-pending">0</span> pending</span>
+          <span><span class="swatch" style="background:var(--orange)"></span><span id="stat-processing">0</span> running</span>
+          <span><span class="swatch" style="background:var(--moss)"></span><span id="stat-completed">0</span> done</span>
+          <span><span class="swatch" style="background:var(--brick)"></span><span id="stat-failed">0</span> failed</span>
+        </div>
+      </div>
+      <div class="export-row">
+        <button class="btn-ghost" id="export-json">Download JSON</button>
+        <button class="btn-ghost" id="export-csv">Download CSV</button>
+        <button class="btn-ghost" id="export-txt">Download .txt</button>
+        <button class="btn-ghost" id="clear-completed" style="margin-left:auto;">Clear completed</button>
+        <button class="btn-ghost" id="retry-failed">Retry failed</button>
+        <button class="btn-ghost" id="clear-all">Clear all</button>
+      </div>
+      <div class="queue-list" id="queue-list">
+        <div class="empty-state" id="empty-state">
+          <div class="glyph">—</div>
+          <p>Nothing queued yet. Drop in your prompts on the left — one per line works for dumping in many at once — and set how often Claude Batch should fire them off.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer class="site">
+    Claude Batch paces requests to the Anthropic API directly from your browser using your own API key. Nothing is logged, stored remotely, or sent anywhere but api.anthropic.com.
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---------- State ----------
+  let queue = []; // {id, prompt, status, response, error, addedAt, retryCount}
+  let isRunning = false;
+  let runTimer = null;       // setTimeout handle for the next paced call
+  let elapsedTimer = null;   // setInterval handle for the "elapsed" clock
+  let runStartTime = null;
+  let idCounter = 1;
+  let inFlightController = null; // AbortController for the current fetch, so Stop can cancel it
+  const MAX_RETRIES = 3;
+  const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
+
+  // ---------- Elements ----------
+  const els = {
+    apiKey: document.getElementById('api-key'),
+    keyShow: document.getElementById('key-show'),
+    keyRemember: document.getElementById('key-remember'),
+    keyStatus: document.getElementById('key-status'),
+    keybar: document.getElementById('keybar'),
+    keyDot: document.getElementById('key-dot'),
+
+    promptInput: document.getElementById('prompt-input'),
+    addBtn: document.getElementById('add-btn'),
+    clearInputBtn: document.getElementById('clear-input-btn'),
+
+    modelSelect: document.getElementById('model-select'),
+    maxTokens: document.getElementById('max-tokens'),
+    sysPrompt: document.getElementById('sys-prompt'),
+
+    paceNum: document.getElementById('pace-num'),
+    paceSlider: document.getElementById('pace-slider'),
+    paceStrip: document.getElementById('pace-strip'),
+    paceEstimate: document.getElementById('pace-estimate'),
+
+    runBtn: document.getElementById('run-btn'),
+    runProgressText: document.getElementById('run-progress-text'),
+    runElapsed: document.getElementById('run-elapsed'),
+
+    queueList: document.getElementById('queue-list'),
+    emptyState: document.getElementById('empty-state'),
+
+    statPending: document.getElementById('stat-pending'),
+    statProcessing: document.getElementById('stat-processing'),
+    statCompleted: document.getElementById('stat-completed'),
+    statFailed: document.getElementById('stat-failed'),
+
+    exportJson: document.getElementById('export-json'),
+    exportCsv: document.getElementById('export-csv'),
+    exportTxt: document.getElementById('export-txt'),
+    clearCompleted: document.getElementById('clear-completed'),
+    retryFailed: document.getElementById('retry-failed'),
+    clearAll: document.getElementById('clear-all'),
+  };
+
+  // ---------- API key persistence ----------
+  const STORAGE_KEY = 'claude_batch_api_key';
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      els.apiKey.value = saved;
+    }
+  } catch (e) { /* localStorage unavailable, fine */ }
+
+  function refreshKeyStatus(){
+    const hasKey = els.apiKey.value.trim().length > 0;
+    els.keybar.classList.toggle('connected', hasKey);
+    els.keyStatus.textContent = hasKey ? 'key set' : 'not connected';
+    els.runBtn.disabled = !hasKey || queue.filter(r => r.status === 'pending').length === 0 || isRunning;
+  }
+
+  els.apiKey.addEventListener('input', () => {
+    if (els.keyRemember.checked) {
+      try { localStorage.setItem(STORAGE_KEY, els.apiKey.value); } catch(e){}
+    }
+    refreshKeyStatus();
+  });
+  els.keyShow.addEventListener('change', () => {
+    els.apiKey.type = els.keyShow.checked ? 'text' : 'password';
+  });
+  els.keyRemember.addEventListener('change', () => {
+    try {
+      if (els.keyRemember.checked) localStorage.setItem(STORAGE_KEY, els.apiKey.value);
+      else localStorage.removeItem(STORAGE_KEY);
+    } catch(e){}
+  });
+
+  // ---------- Pace dial ----------
+  const TICK_COUNT = 24;
+  for (let i = 0; i < TICK_COUNT; i++) {
+    const t = document.createElement('div');
+    t.className = 'tick';
+    els.paceStrip.appendChild(t);
+  }
+  function renderPaceStrip(seconds){
+    const ticks = els.paceStrip.children;
+    // map seconds (1-180) to how many ticks are "active" / height pattern
+    const ratio = (seconds - 1) / 179; // 0 -> fast, 1 -> slow
+    const activeCount = Math.max(1, Math.round(TICK_COUNT * (1 - ratio)));
+    for (let i = 0; i < ticks.length; i++) {
+      const isActive = i < activeCount;
+      ticks[i].classList.toggle('active', isActive);
+      ticks[i].style.height = isActive ? (10 + (14 * (1 - i/activeCount))) + 'px' : '6px';
+    }
+  }
+  function updatePaceLabel(){
+    const seconds = parseInt(els.paceSlider.value, 10);
+    els.paceNum.textContent = seconds;
+    renderPaceStrip(seconds);
+    updateEstimate();
+  }
+  els.paceSlider.addEventListener('input', updatePaceLabel);
+  updatePaceLabel();
+
+  function updateEstimate(){
+    const pending = queue.filter(r => r.status === 'pending').length;
+    if (pending === 0) {
+      els.paceEstimate.textContent = queue.length === 0
+        ? 'Add requests to see an estimated finish time.'
+        : 'All requests have been sent.';
+      return;
+    }
+    const seconds = parseInt(els.paceSlider.value, 10);
+    const totalSeconds = (pending - 1) * seconds; // last one fires immediately, no wait after
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    const timeStr = totalSeconds < 60
+      ? `~${totalSeconds}s`
+      : `~${mins}m${secs > 0 ? ' ' + secs + 's' : ''}`;
+    els.paceEstimate.innerHTML = `<strong>${pending}</strong> request${pending === 1 ? '' : 's'} pending — at this pace, finishes in <strong>${timeStr}</strong>.`;
+  }
+
+  // ---------- Adding to queue ----------
+  function addPromptsFromText(text){
+    const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length === 0) return;
+    lines.forEach(line => {
+      queue.push({
+        id: idCounter++,
+        prompt: line,
+        status: 'pending',
+        response: null,
+        error: null,
+        expanded: false,
+      });
+    });
+    renderQueue();
+    updateEstimate();
+    refreshKeyStatus();
+  }
+
+  els.addBtn.addEventListener('click', () => {
+    addPromptsFromText(els.promptInput.value);
+    els.promptInput.value = '';
+    els.promptInput.focus();
+  });
+  els.clearInputBtn.addEventListener('click', () => {
+    els.promptInput.value = '';
+    els.promptInput.focus();
+  });
+  els.promptInput.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      els.addBtn.click();
+    }
+  });
+
+  // ---------- Rendering the queue ----------
+  function renderQueue(){
+    els.emptyState.style.display = queue.length === 0 ? 'block' : 'none';
+
+    // Remove existing rows except empty state
+    Array.from(els.queueList.querySelectorAll('.row')).forEach(r => r.remove());
+
+    queue.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.dataset.id = item.id;
+
+      const indexEl = document.createElement('div');
+      indexEl.className = 'row-index';
+      indexEl.textContent = String(idx + 1).padStart(2, '0');
+
+      const contentEl = document.createElement('div');
+      contentEl.className = 'row-content';
+
+      const promptEl = document.createElement('div');
+      promptEl.className = 'row-prompt' + (item.expanded ? ' expanded' : '');
+      promptEl.textContent = item.prompt;
+      contentEl.appendChild(promptEl);
+
+      if (item.prompt.length > 220) {
+        const toggle = document.createElement('span');
+        toggle.className = 'row-toggle';
+        toggle.textContent = item.expanded ? 'Show less' : 'Show more';
+        toggle.addEventListener('click', () => {
+          item.expanded = !item.expanded;
+          renderQueue();
+        });
+        contentEl.appendChild(toggle);
+      }
+
+      if (item.status === 'processing') {
+        const prog = document.createElement('div');
+        prog.className = 'row-progress';
+        const fill = document.createElement('div');
+        fill.className = 'row-progress-fill';
+        fill.id = 'progress-fill-' + item.id;
+        prog.appendChild(fill);
+        contentEl.appendChild(prog);
+      }
+
+      if (item.status === 'completed' && item.response) {
+        const resp = document.createElement('div');
+        resp.className = 'row-response';
+        resp.textContent = item.response;
+        contentEl.appendChild(resp);
+      }
+      if (item.status === 'failed' && item.error) {
+        const resp = document.createElement('div');
+        resp.className = 'row-response error';
+        resp.textContent = item.error;
+        contentEl.appendChild(resp);
+
+        const retryLink = document.createElement('span');
+        retryLink.className = 'row-toggle';
+        retryLink.textContent = 'Retry this request';
+        retryLink.addEventListener('click', () => {
+          item.status = 'pending';
+          item.error = null;
+          renderQueue();
+          updateEstimate();
+          refreshKeyStatus();
+        });
+        contentEl.appendChild(retryLink);
+      }
+
+      const badge = document.createElement('div');
+      badge.className = 'status-badge ' + item.status;
+      badge.textContent = item.status;
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'row-remove';
+      removeBtn.innerHTML = '&times;';
+      removeBtn.title = 'Remove from queue';
+      removeBtn.disabled = item.status === 'processing';
+      removeBtn.addEventListener('click', () => {
+        queue = queue.filter(q => q.id !== item.id);
+        renderQueue();
+        updateStats();
+        updateEstimate();
+        refreshKeyStatus();
+      });
+
+      row.appendChild(indexEl);
+      row.appendChild(contentEl);
+      row.appendChild(badge);
+      row.appendChild(removeBtn);
+      els.queueList.appendChild(row);
+    });
+
+    updateStats();
+  }
+
+  function updateStats(){
+    const counts = { pending: 0, processing: 0, completed: 0, failed: 0 };
+    queue.forEach(q => counts[q.status]++);
+    els.statPending.textContent = counts.pending;
+    els.statProcessing.textContent = counts.processing;
+    els.statCompleted.textContent = counts.completed;
+    els.statFailed.textContent = counts.failed;
+    const totalDone = counts.completed + counts.failed;
+    els.runProgressText.textContent = `${totalDone} of ${queue.length} complete`;
+  }
+
+  // ---------- Running the queue ----------
+  els.runBtn.addEventListener('click', () => {
+    if (isRunning) {
+      stopRun();
+    } else {
+      startRun();
+    }
+  });
+
+  function startRun(){
+    if (!els.apiKey.value.trim()) return;
+    const pending = queue.filter(r => r.status === 'pending');
+    if (pending.length === 0) return;
+
+    isRunning = true;
+    runStartTime = Date.now();
+    els.runBtn.textContent = 'Stop queue';
+    els.runBtn.classList.remove('go');
+    els.runBtn.classList.add('stop');
+    els.runBtn.disabled = false;
+    setControlsDisabled(true);
+    els.clearAll.disabled = true; // prevent wiping the queue while a row is in flight
+
+    clearInterval(elapsedTimer);
+    tickElapsed();
+    elapsedTimer = setInterval(tickElapsed, 1000);
+
+    processNext();
+  }
+
+  function stopRun(){
+    isRunning = false;
+    clearTimeout(runTimer);
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+    if (inFlightController) {
+      inFlightController.abort();
+      inFlightController = null;
+    }
+    els.runBtn.textContent = 'Start queue';
+    els.runBtn.classList.remove('stop');
+    els.runBtn.classList.add('go');
+    els.clearAll.disabled = false;
+    setControlsDisabled(false);
+    refreshKeyStatus();
+  }
+
+  function setControlsDisabled(disabled){
+    els.modelSelect.disabled = disabled;
+    els.maxTokens.disabled = disabled;
+    els.sysPrompt.disabled = disabled;
+  }
+
+  function tickElapsed(){
+    if (!isRunning || !runStartTime) return;
+    const secs = Math.floor((Date.now() - runStartTime) / 1000);
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    els.runElapsed.textContent = `elapsed ${mins > 0 ? mins + 'm ' : ''}${rem}s`;
+  }
+
+  async function processNext(){
+    if (!isRunning) return;
+    const next = queue.find(r => r.status === 'pending');
+    if (!next) {
+      stopRun();
+      return;
+    }
+
+    next.status = 'processing';
+    renderQueue();
+    animateRowProgress(next.id);
+
+    const result = await callClaudeWithRetry(next);
+
+    if (!isRunning) {
+      // A stop/abort happened while this call was in flight. Leave the row as the
+      // retry helper left it (pending if it was reset for a retry, or whatever it
+      // already was) rather than overwriting state from a run that's no longer active.
+      renderQueue();
+      return;
+    }
+
+    if (result.ok) {
+      next.status = 'completed';
+      next.response = result.text;
+    } else {
+      next.status = 'failed';
+      next.error = result.error;
+    }
+
+    renderQueue();
+    updateEstimate();
+
+    if (!isRunning) return;
+
+    const remaining = queue.filter(r => r.status === 'pending').length;
+    if (remaining === 0) {
+      stopRun();
+      return;
+    }
+
+    const intervalMs = parseInt(els.paceSlider.value, 10) * 1000;
+    runTimer = setTimeout(processNext, intervalMs);
+  }
+
+  // Calls Claude for a single queue item. On a retryable error (429 rate limit,
+  // or a 5xx/overloaded response) it waits with exponential backoff and tries
+  // again, up to MAX_RETRIES times, since the entire point of this tool is to
+  // avoid a transient rate limit turning into a permanently failed row.
+  async function callClaudeWithRetry(item){
+    let attempt = 0;
+    while (true) {
+      if (!isRunning) return { ok: false, error: 'Stopped before completion.' };
+      try {
+        const text = await callClaude(item.prompt);
+        return { ok: true, text };
+      } catch (err) {
+        const status = err.status;
+        const retryable = RETRYABLE_STATUSES.has(status) || err.name === 'TypeError'; // TypeError ~ network failure
+        attempt++;
+        if (!retryable || attempt > MAX_RETRIES || !isRunning) {
+          return { ok: false, error: err.message || String(err) };
+        }
+        const backoffMs = err.retryAfterMs
+          ? Math.min(err.retryAfterMs, 30000)
+          : Math.min(2000 * Math.pow(2, attempt - 1), 20000);
+        item.error = `Retrying (attempt ${attempt}/${MAX_RETRIES}) after: ${err.message || err}`;
+        item.status = 'processing';
+        renderQueue();
+        await sleepAbortable(backoffMs);
+      }
+    }
+  }
+
+  function sleepAbortable(ms){
+    return new Promise(resolve => {
+      const t = setTimeout(resolve, ms);
+      // If Stop is hit during a backoff wait, resolve early so the loop can exit.
+      const check = setInterval(() => {
+        if (!isRunning) { clearTimeout(t); clearInterval(check); resolve(); }
+      }, 100);
+      setTimeout(() => clearInterval(check), ms + 50);
+    });
+  }
+
+  function animateRowProgress(id){
+    const intervalMs = parseInt(els.paceSlider.value, 10) * 1000;
+    // Progress bar reflects estimated call duration loosely capped at interval/2 or 8s, whichever smaller,
+    // since the actual API call duration is unknown — this is a soft visual pulse, not literal timing.
+    const fill = document.getElementById('progress-fill-' + id);
+    if (!fill) return;
+    const duration = Math.min(intervalMs * 0.9, 12000);
+    fill.style.transition = `width ${duration}ms linear`;
+    requestAnimationFrame(() => {
+      fill.style.width = '92%';
+    });
+  }
+
+  // ---------- Claude API call ----------
+  async function callClaude(promptText){
+    const apiKey = els.apiKey.value.trim();
+    const model = els.modelSelect.value;
+    const maxTokens = parseInt(els.maxTokens.value, 10) || 1024;
+    const system = els.sysPrompt.value.trim();
+
+    const body = {
+      model: model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: promptText }],
+    };
+    if (system) body.system = system;
+
+    inFlightController = new AbortController();
+
+    let res;
+    try {
+      res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify(body),
+        signal: inFlightController.signal,
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        const abortErr = new Error('Stopped by user.');
+        abortErr.name = 'AbortError';
+        throw abortErr;
+      }
+      // Network failure (offline, DNS, CORS, etc) — surface clearly and mark as
+      // retryable upstream via err.name === 'TypeError'.
+      throw err;
+    } finally {
+      inFlightController = null;
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const errJson = await res.json();
+        detail = errJson?.error?.message || JSON.stringify(errJson);
+      } catch (e) {
+        detail = await res.text().catch(() => '');
+      }
+      const httpErr = new Error(`${res.status} ${res.statusText}${detail ? ' — ' + detail : ''}`);
+      httpErr.status = res.status;
+      const retryAfter = res.headers && res.headers.get ? res.headers.get('retry-after') : null;
+      if (retryAfter && !isNaN(parseInt(retryAfter, 10))) {
+        httpErr.retryAfterMs = parseInt(retryAfter, 10) * 1000;
+      }
+      throw httpErr;
+    }
+
+    const data = await res.json();
+    const textBlocks = (data.content || []).filter(b => b.type === 'text').map(b => b.text);
+    return textBlocks.join('\n').trim() || '(empty response)';
+  }
+
+  // ---------- Export ----------
+  function downloadFile(filename, content, mime){
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function timestamp(){
+    return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  }
+
+  els.exportJson.addEventListener('click', () => {
+    const data = queue.map(({prompt, status, response, error}) => ({prompt, status, response, error}));
+    downloadFile(`claude-batch-${timestamp()}.json`, JSON.stringify(data, null, 2), 'application/json');
+  });
+
+  els.exportCsv.addEventListener('click', () => {
+    const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
+    const rows = [['index', 'prompt', 'status', 'response', 'error']];
+    queue.forEach((q, i) => rows.push([i + 1, q.prompt, q.status, q.response || '', q.error || '']));
+    const csv = rows.map(r => r.map(esc).join(',')).join('\n');
+    downloadFile(`claude-batch-${timestamp()}.csv`, csv, 'text/csv');
+  });
+
+  els.exportTxt.addEventListener('click', () => {
+    const lines = queue.map((q, i) => {
+      return `[${i + 1}] (${q.status})\nPROMPT: ${q.prompt}\n${q.status === 'completed' ? 'RESPONSE: ' + q.response : ''}${q.status === 'failed' ? 'ERROR: ' + q.error : ''}\n`;
+    });
+    downloadFile(`claude-batch-${timestamp()}.txt`, lines.join('\n---\n\n'), 'text/plain');
+  });
+
+  els.clearCompleted.addEventListener('click', () => {
+    queue = queue.filter(q => q.status === 'pending' || q.status === 'processing');
+    renderQueue();
+    updateEstimate();
+    refreshKeyStatus();
+  });
+
+  els.retryFailed.addEventListener('click', () => {
+    queue.forEach(q => {
+      if (q.status === 'failed') {
+        q.status = 'pending';
+        q.error = null;
+      }
+    });
+    renderQueue();
+    updateEstimate();
+    refreshKeyStatus();
+  });
+
+  els.clearAll.addEventListener('click', () => {
+    if (isRunning) stopRun();
+    queue = [];
+    renderQueue();
+    updateEstimate();
+    refreshKeyStatus();
+  });
+
+  // ---------- Init ----------
+  refreshKeyStatus();
+  renderQueue();
+
+})();
+</script>
+
+</body>
+</html>
