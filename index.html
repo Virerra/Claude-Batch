@@ -171,6 +171,109 @@
   .composer{position:sticky; top:20px;}
   .composer-body{padding:14px 18px 18px;}
 
+  /* ---------- Input mode toggle ---------- */
+  .input-mode-toggle{
+    display:flex;
+    gap:4px;
+    background:var(--surface-sunk);
+    border-radius:8px;
+    padding:3px;
+    margin-bottom:12px;
+  }
+  .mode-tab{
+    flex:1;
+    background:transparent;
+    border:none;
+    color:var(--ink-soft);
+    font-size:12.5px;
+    font-weight:600;
+    padding:7px 8px;
+    border-radius:6px;
+  }
+  .mode-tab.active{
+    background:var(--surface);
+    color:var(--orange-deep);
+    box-shadow:var(--shadow-sm);
+  }
+  .mode-tab:hover:not(.active){background:rgba(0,0,0,0.03);}
+
+  /* ---------- File drop zone ---------- */
+  .file-drop{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    min-height:84px;
+    border:1.5px dashed var(--line-strong);
+    border-radius:8px;
+    background:var(--surface-sunk);
+    cursor:pointer;
+    padding:14px;
+    transition:border-color .15s, background .15s;
+  }
+  .file-drop:hover, .file-drop.dragover{
+    border-color:var(--orange);
+    background:var(--orange-wash);
+  }
+  .file-drop-label{
+    font-size:12.5px;
+    color:var(--ink-soft);
+    line-height:1.5;
+  }
+  .file-error{
+    margin-top:8px;
+    padding:8px 10px;
+    background:var(--brick-wash);
+    color:var(--brick);
+    border-radius:6px;
+    font-size:12px;
+  }
+
+  /* ---------- Column pills ---------- */
+  .column-pills{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    margin-top:8px;
+  }
+  .column-pill{
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    background:var(--surface-sunk);
+    border:1px solid var(--line-strong);
+    color:var(--orange-deep);
+    border-radius:20px;
+    padding:4px 10px;
+    cursor:pointer;
+    transition:background .12s, border-color .12s;
+  }
+  .column-pill:hover{background:var(--orange-wash); border-color:var(--orange);}
+
+  .template-preview{
+    margin-top:10px;
+    padding:10px 12px;
+    background:var(--surface-sunk);
+    border-left:2px solid var(--orange);
+    border-radius:0 6px 6px 0;
+    font-family:var(--font-mono);
+    font-size:12px;
+    line-height:1.5;
+    color:var(--ink-soft);
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .template-preview .preview-label{
+    display:block;
+    font-family:var(--font-body);
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+    color:var(--ink-faint);
+    font-weight:600;
+    margin-bottom:4px;
+  }
+
+
   textarea#prompt-input{
     width:100%;
     min-height:108px;
@@ -559,11 +662,40 @@
         <h2>Add to queue</h2>
       </div>
       <div class="composer-body">
-        <textarea id="prompt-input" placeholder="Type a request, or paste many at once — one per line — to add them all."></textarea>
-        <div class="composer-hint">One prompt per line. <kbd>⌘/Ctrl + Enter</kbd> to add.</div>
-        <div class="btn-row">
-          <button class="btn-primary" id="add-btn">Add to queue</button>
-          <button class="btn-ghost" id="clear-input-btn" title="Clear the text box">Clear</button>
+        <div class="input-mode-toggle" role="tablist">
+          <button class="mode-tab active" id="mode-text-btn" role="tab" aria-selected="true">Type prompts</button>
+          <button class="mode-tab" id="mode-file-btn" role="tab" aria-selected="false">From spreadsheet</button>
+        </div>
+
+        <div id="text-mode-panel">
+          <textarea id="prompt-input" placeholder="Type a request, or paste many at once — one per line — to add them all."></textarea>
+          <div class="composer-hint">One prompt per line. <kbd>⌘/Ctrl + Enter</kbd> to add.</div>
+          <div class="btn-row">
+            <button class="btn-primary" id="add-btn">Add to queue</button>
+            <button class="btn-ghost" id="clear-input-btn" title="Clear the text box">Clear</button>
+          </div>
+        </div>
+
+        <div id="file-mode-panel" style="display:none;">
+          <label class="file-drop" id="file-drop-zone" for="file-input">
+            <span class="file-drop-label" id="file-drop-label">Drop a CSV or Excel file here, or click to browse</span>
+            <input type="file" id="file-input" accept=".csv,.xlsx,.xls" style="display:none;">
+          </label>
+          <div id="file-error" class="file-error" style="display:none;"></div>
+
+          <div id="file-template-block" style="display:none;">
+            <div class="composer-hint" style="margin-top:12px;">
+              <span id="file-row-count"></span> — click a column to insert it into the template below.
+            </div>
+            <div class="column-pills" id="column-pills"></div>
+            <textarea class="sys" id="row-template" placeholder="e.g. Summarize this support ticket from {Name}: {Notes}" style="margin-top:8px; min-height:64px;"></textarea>
+            <div class="composer-hint">Only the columns you reference here are sent to Claude — leave out anything irrelevant to keep each request small.</div>
+            <div class="template-preview" id="template-preview"></div>
+            <div class="btn-row">
+              <button class="btn-primary" id="add-rows-btn">Add rows to queue</button>
+              <button class="btn-ghost" id="clear-file-btn">Remove file</button>
+            </div>
+          </div>
         </div>
 
         <hr class="sep">
@@ -649,6 +781,10 @@
 
 </div>
 
+<!-- SheetJS, pinned to a specific version for stability. Only used for parsing
+     uploaded .xlsx/.xls/.csv files client-side -- nothing is ever uploaded anywhere. -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js" defer></script>
+
 <script>
 (function(){
   'use strict';
@@ -676,6 +812,23 @@
     promptInput: document.getElementById('prompt-input'),
     addBtn: document.getElementById('add-btn'),
     clearInputBtn: document.getElementById('clear-input-btn'),
+
+    modeTextBtn: document.getElementById('mode-text-btn'),
+    modeFileBtn: document.getElementById('mode-file-btn'),
+    textModePanel: document.getElementById('text-mode-panel'),
+    fileModePanel: document.getElementById('file-mode-panel'),
+
+    fileDropZone: document.getElementById('file-drop-zone'),
+    fileDropLabel: document.getElementById('file-drop-label'),
+    fileInput: document.getElementById('file-input'),
+    fileError: document.getElementById('file-error'),
+    fileTemplateBlock: document.getElementById('file-template-block'),
+    fileRowCount: document.getElementById('file-row-count'),
+    columnPills: document.getElementById('column-pills'),
+    rowTemplate: document.getElementById('row-template'),
+    templatePreview: document.getElementById('template-preview'),
+    addRowsBtn: document.getElementById('add-rows-btn'),
+    clearFileBtn: document.getElementById('clear-file-btn'),
 
     modelSelect: document.getElementById('model-select'),
     maxTokens: document.getElementById('max-tokens'),
@@ -784,6 +937,9 @@
   }
 
   // ---------- Adding to queue ----------
+  // sourceRow (optional): the original parsed spreadsheet row object, kept on the
+  // queue item purely for export -- it's never rendered in the live row list, so
+  // it adds no DOM cost no matter how many columns a row has.
   function addPromptsFromText(text){
     const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     if (lines.length === 0) return;
@@ -795,6 +951,7 @@
         response: null,
         error: null,
         expanded: false,
+        sourceRow: null,
       });
     });
     renderQueue();
@@ -816,6 +973,208 @@
       e.preventDefault();
       els.addBtn.click();
     }
+  });
+
+  // ---------- Input mode toggle (Type prompts vs. From spreadsheet) ----------
+  function setInputMode(mode){
+    const isFile = mode === 'file';
+    els.modeTextBtn.classList.toggle('active', !isFile);
+    els.modeFileBtn.classList.toggle('active', isFile);
+    els.modeTextBtn.setAttribute('aria-selected', String(!isFile));
+    els.modeFileBtn.setAttribute('aria-selected', String(isFile));
+    els.textModePanel.style.display = isFile ? 'none' : 'block';
+    els.fileModePanel.style.display = isFile ? 'block' : 'none';
+  }
+  els.modeTextBtn.addEventListener('click', () => setInputMode('text'));
+  els.modeFileBtn.addEventListener('click', () => setInputMode('file'));
+
+  // ---------- Spreadsheet upload, parsing, and row templating ----------
+  // parsedRows: array of plain objects, one per spreadsheet row, keyed by header name.
+  // e.g. [{ Name: "Jane", Status: "Open", Notes: "..." }, ...]
+  let parsedRows = [];
+  let parsedHeaders = [];
+  const MAX_ROWS = 5000; // sane ceiling -- this is a client-side tool, not a data warehouse
+
+  function showFileError(msg){
+    els.fileError.textContent = msg;
+    els.fileError.style.display = 'block';
+    els.fileTemplateBlock.style.display = 'none';
+  }
+  function clearFileError(){
+    els.fileError.style.display = 'none';
+    els.fileError.textContent = '';
+  }
+
+  function resetFileState(){
+    parsedRows = [];
+    parsedHeaders = [];
+    els.fileInput.value = '';
+    els.fileDropLabel.textContent = 'Drop a CSV or Excel file here, or click to browse';
+    els.fileTemplateBlock.style.display = 'none';
+    els.columnPills.innerHTML = '';
+    els.rowTemplate.value = '';
+    els.templatePreview.innerHTML = '';
+    clearFileError();
+  }
+
+  els.clearFileBtn.addEventListener('click', resetFileState);
+
+  els.fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) handleSpreadsheetFile(file);
+  });
+
+  // Drag-and-drop support on the drop zone.
+  ['dragover', 'dragenter'].forEach(evt => {
+    els.fileDropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      els.fileDropZone.classList.add('dragover');
+    });
+  });
+  ['dragleave', 'dragend'].forEach(evt => {
+    els.fileDropZone.addEventListener(evt, () => els.fileDropZone.classList.remove('dragover'));
+  });
+  els.fileDropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    els.fileDropZone.classList.remove('dragover');
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) handleSpreadsheetFile(file);
+  });
+
+  function handleSpreadsheetFile(file){
+    clearFileError();
+    const name = file.name.toLowerCase();
+    const isCsv = name.endsWith('.csv');
+    const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls');
+
+    if (!isCsv && !isExcel) {
+      showFileError('Unsupported file type. Please upload a .csv, .xlsx, or .xls file.');
+      return;
+    }
+    if (typeof XLSX === 'undefined') {
+      showFileError('The spreadsheet reader is still loading — give it a second and try again.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onerror = () => showFileError('Could not read that file. Try re-saving it and uploading again.');
+    reader.onload = (e) => {
+      try {
+        const workbook = XLSX.read(e.target.result, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        if (!firstSheetName) {
+          showFileError('That file has no sheets to read.');
+          return;
+        }
+        const sheet = workbook.Sheets[firstSheetName];
+        // defval: '' ensures every row has every header key, even if that cell was
+        // blank, so template placeholders never silently disappear mid-batch.
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+        if (rows.length === 0) {
+          showFileError('That sheet looks empty — no data rows found below the header.');
+          return;
+        }
+        if (rows.length > MAX_ROWS) {
+          showFileError(`That sheet has ${rows.length.toLocaleString()} rows. Claude Batch caps uploads at ${MAX_ROWS.toLocaleString()} rows to keep the browser responsive — try splitting the file.`);
+          return;
+        }
+
+        parsedRows = rows;
+        parsedHeaders = Object.keys(rows[0]);
+        onSpreadsheetParsed(file.name, workbook.SheetNames.length);
+      } catch (err) {
+        showFileError(`Couldn't parse that file: ${err.message || err}`);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  function onSpreadsheetParsed(fileName, sheetCount){
+    els.fileDropLabel.textContent = `${fileName} — ${parsedRows.length} row${parsedRows.length === 1 ? '' : 's'} loaded${sheetCount > 1 ? ' (first sheet only)' : ''}. Click to replace.`;
+    els.fileRowCount.textContent = `${parsedRows.length} row${parsedRows.length === 1 ? '' : 's'} found`;
+
+    els.columnPills.innerHTML = '';
+    parsedHeaders.forEach(header => {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = 'column-pill';
+      pill.textContent = header;
+      pill.addEventListener('click', () => insertPlaceholder(header));
+      els.columnPills.appendChild(pill);
+    });
+
+    els.fileTemplateBlock.style.display = 'block';
+    if (!els.rowTemplate.value.trim()) {
+      // Reasonable default so the preview isn't empty: reference every column.
+      els.rowTemplate.value = parsedHeaders.map(h => `${h}: {${h}}`).join('\n');
+    }
+    updateTemplatePreview();
+  }
+
+  function insertPlaceholder(header){
+    const ta = els.rowTemplate;
+    const placeholder = `{${header}}`;
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
+    ta.value = ta.value.slice(0, start) + placeholder + ta.value.slice(end);
+    ta.focus();
+    const cursor = start + placeholder.length;
+    ta.setSelectionRange(cursor, cursor);
+    updateTemplatePreview();
+  }
+
+  // Fills {Header} placeholders in a template using one row's data. Unknown
+  // placeholders (typos, or a header that doesn't exist) are left as literal
+  // text rather than silently dropped, so mistakes are visible, not hidden.
+  function fillTemplate(template, row){
+    return template.replace(/\{([^{}]+)\}/g, (match, key) => {
+      const trimmedKey = key.trim();
+      return Object.prototype.hasOwnProperty.call(row, trimmedKey) ? String(row[trimmedKey]) : match;
+    });
+  }
+
+  function updateTemplatePreview(){
+    const template = els.rowTemplate.value;
+    if (!template.trim() || parsedRows.length === 0) {
+      els.templatePreview.innerHTML = '';
+      return;
+    }
+    const filled = fillTemplate(template, parsedRows[0]);
+    els.templatePreview.innerHTML = '<span class="preview-label">Preview — row 1</span>' + escapeHtml(filled);
+  }
+  els.rowTemplate.addEventListener('input', updateTemplatePreview);
+
+  function escapeHtml(str){
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  els.addRowsBtn.addEventListener('click', () => {
+    const template = els.rowTemplate.value.trim();
+    if (!template) {
+      showFileError('Write a template above before adding rows — even just one column placeholder works.');
+      return;
+    }
+    if (parsedRows.length === 0) return;
+
+    parsedRows.forEach(row => {
+      queue.push({
+        id: idCounter++,
+        prompt: fillTemplate(template, row),
+        status: 'pending',
+        response: null,
+        error: null,
+        expanded: false,
+        sourceRow: row, // kept for export only, never rendered in the live row list
+      });
+    });
+
+    renderQueue();
+    updateEstimate();
+    refreshKeyStatus();
+    resetFileState();
   });
 
   // ---------- Rendering the queue ----------
@@ -1183,21 +1542,47 @@
   }
 
   els.exportJson.addEventListener('click', () => {
-    const data = queue.map(({prompt, status, response, error}) => ({prompt, status, response, error}));
+    const data = queue.map(({prompt, status, response, error, sourceRow}) => ({
+      prompt, status, response, error,
+      ...(sourceRow ? { sourceRow } : {}),
+    }));
     downloadFile(`claude-batch-${timestamp()}.json`, JSON.stringify(data, null, 2), 'application/json');
   });
 
   els.exportCsv.addEventListener('click', () => {
     const esc = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
-    const rows = [['index', 'prompt', 'status', 'response', 'error']];
-    queue.forEach((q, i) => rows.push([i + 1, q.prompt, q.status, q.response || '', q.error || '']));
+
+    // Source-row columns vary per upload (or may not exist at all for manually
+    // typed prompts), so the CSV header is the union of every column seen across
+    // the whole queue -- this keeps a mixed queue (some rows from a spreadsheet,
+    // some typed manually) exporting cleanly into one consistent table.
+    const sourceColumns = [];
+    const seen = new Set();
+    queue.forEach(q => {
+      if (q.sourceRow) {
+        Object.keys(q.sourceRow).forEach(col => {
+          if (!seen.has(col)) { seen.add(col); sourceColumns.push(col); }
+        });
+      }
+    });
+
+    const headerRow = ['index', ...sourceColumns, 'prompt', 'status', 'response', 'error'];
+    const rows = [headerRow];
+    queue.forEach((q, i) => {
+      const sourceValues = sourceColumns.map(col => (q.sourceRow ? q.sourceRow[col] : '') ?? '');
+      rows.push([i + 1, ...sourceValues, q.prompt, q.status, q.response || '', q.error || '']);
+    });
+
     const csv = rows.map(r => r.map(esc).join(',')).join('\n');
     downloadFile(`claude-batch-${timestamp()}.csv`, csv, 'text/csv');
   });
 
   els.exportTxt.addEventListener('click', () => {
     const lines = queue.map((q, i) => {
-      return `[${i + 1}] (${q.status})\nPROMPT: ${q.prompt}\n${q.status === 'completed' ? 'RESPONSE: ' + q.response : ''}${q.status === 'failed' ? 'ERROR: ' + q.error : ''}\n`;
+      const sourceBlock = q.sourceRow
+        ? 'SOURCE ROW: ' + Object.entries(q.sourceRow).map(([k, v]) => `${k}=${v}`).join(', ') + '\n'
+        : '';
+      return `[${i + 1}] (${q.status})\n${sourceBlock}PROMPT: ${q.prompt}\n${q.status === 'completed' ? 'RESPONSE: ' + q.response : ''}${q.status === 'failed' ? 'ERROR: ' + q.error : ''}\n`;
     });
     downloadFile(`claude-batch-${timestamp()}.txt`, lines.join('\n---\n\n'), 'text/plain');
   });
