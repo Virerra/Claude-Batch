@@ -2,7 +2,7 @@
 
 A free, open-source tool that queues up requests to Claude and fires them off at a pace you control — so you stop hitting rate limits and stop babysitting a loop.
 
-**[Try it live →](https://virerra.github.io/Claude-Batch/)** *(once GitHub Pages is enabled — see Running it below) — or just download `index.html` and open it locally, no setup required.*
+**[Try it live →](https://virerra.github.io/Claude-Batch/)** or just download `index.html` and open it locally, no setup required.*
 
 ## Why
 
