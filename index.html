@@ -508,14 +508,37 @@
 
   .row{
     display:grid;
-    grid-template-columns:28px 1fr 110px 32px;
-    gap:12px;
+    grid-template-columns:16px 28px 1fr 110px 32px;
+    gap:10px;
     align-items:start;
     padding:14px 18px;
     border-bottom:1px solid var(--line);
     position:relative;
+    transition:background .1s;
   }
   .row:last-child{border-bottom:none;}
+  .row-drag-handle{
+    cursor:grab;
+    color:var(--ink-faint);
+    font-size:14px;
+    line-height:1.6;
+    padding-top:1px;
+    user-select:none;
+    text-align:center;
+  }
+  .row-drag-handle-disabled{
+    color:var(--line-strong);
+    cursor:default;
+  }
+  .row-draggable.dragging{
+    opacity:0.4;
+  }
+  .row-draggable.drag-over-top{
+    box-shadow:inset 0 2px 0 0 var(--orange);
+  }
+  .row-draggable.drag-over-bottom{
+    box-shadow:inset 0 -2px 0 0 var(--orange);
+  }
   .row-index{
     font-family:var(--font-mono);
     font-size:11px;
@@ -797,6 +820,7 @@
   let runStartTime = null;
   let idCounter = 1;
   let inFlightController = null; // AbortController for the current fetch, so Stop can cancel it
+  let draggedId = null; // id of the queue item currently being dragged, or null
   const MAX_RETRIES = 3;
   const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
 
@@ -1189,6 +1213,56 @@
       row.className = 'row';
       row.dataset.id = item.id;
 
+      // Only pending rows can be reordered, and only when no run is active --
+      // reordering a row that's mid-flight or already answered doesn't mean
+      // anything, and allowing it during a run risks racing with processNext().
+      const isReorderable = item.status === 'pending' && !isRunning;
+      row.draggable = isReorderable;
+      if (isReorderable) {
+        row.classList.add('row-draggable');
+        row.addEventListener('dragstart', (e) => {
+          draggedId = item.id;
+          row.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+          // Firefox requires setData to be called for drag to initiate at all.
+          try { e.dataTransfer.setData('text/plain', String(item.id)); } catch(err) {}
+        });
+        row.addEventListener('dragend', () => {
+          draggedId = null;
+          row.classList.remove('dragging');
+          Array.from(els.queueList.querySelectorAll('.row')).forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+        });
+        row.addEventListener('dragover', (e) => {
+          if (draggedId === null || draggedId === item.id) return;
+          const draggedItem = queue.find(q => q.id === draggedId);
+          if (!draggedItem || draggedItem.status !== 'pending') return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          const rect = row.getBoundingClientRect();
+          const isAfter = (e.clientY - rect.top) > rect.height / 2;
+          row.classList.toggle('drag-over-top', !isAfter);
+          row.classList.toggle('drag-over-bottom', isAfter);
+        });
+        row.addEventListener('dragleave', () => {
+          row.classList.remove('drag-over-top', 'drag-over-bottom');
+        });
+        row.addEventListener('drop', (e) => {
+          e.preventDefault();
+          row.classList.remove('drag-over-top', 'drag-over-bottom');
+          if (draggedId === null || draggedId === item.id) return;
+          const rect = row.getBoundingClientRect();
+          const isAfter = (e.clientY - rect.top) > rect.height / 2;
+          reorderQueue(draggedId, item.id, isAfter);
+        });
+      }
+
+      const dragHandle = document.createElement('div');
+      dragHandle.className = 'row-drag-handle';
+      dragHandle.innerHTML = '⠿';
+      dragHandle.title = isReorderable ? 'Drag to reorder' : '';
+      dragHandle.setAttribute('aria-hidden', 'true');
+      if (!isReorderable) dragHandle.classList.add('row-drag-handle-disabled');
+
       const indexEl = document.createElement('div');
       indexEl.className = 'row-index';
       indexEl.textContent = String(idx + 1).padStart(2, '0');
@@ -1264,6 +1338,7 @@
         refreshKeyStatus();
       });
 
+      row.appendChild(dragHandle);
       row.appendChild(indexEl);
       row.appendChild(contentEl);
       row.appendChild(badge);
@@ -1272,6 +1347,25 @@
     });
 
     updateStats();
+  }
+
+  // Moves draggedId to sit immediately before/after targetId within the queue
+  // array. Only ever reorders among pending items -- if either end of the drag
+  // isn't pending anymore (e.g. it started processing mid-drag), the drop is
+  // silently ignored rather than producing a confusing partial reorder.
+  function reorderQueue(draggedId, targetId, insertAfter){
+    const draggedIdx = queue.findIndex(q => q.id === draggedId);
+    const targetIdx = queue.findIndex(q => q.id === targetId);
+    if (draggedIdx === -1 || targetIdx === -1) return;
+    if (queue[draggedIdx].status !== 'pending' || queue[targetIdx].status !== 'pending') return;
+
+    const [draggedItem] = queue.splice(draggedIdx, 1);
+    let insertAt = queue.findIndex(q => q.id === targetId);
+    if (insertAfter) insertAt += 1;
+    queue.splice(insertAt, 0, draggedItem);
+
+    renderQueue();
+    updateEstimate();
   }
 
   function updateStats(){
@@ -1312,6 +1406,7 @@
     tickElapsed();
     elapsedTimer = setInterval(tickElapsed, 1000);
 
+    renderQueue(); // turns off drag-to-reorder on pending rows now that a run is active
     processNext();
   }
 
@@ -1329,15 +1424,15 @@
     // (aborted fetch or a backoff wait cut short). Without this, that row would be
     // permanently invisible to processNext, which only ever picks up "pending" rows
     // — so the queue would look stuck forever even after clicking Start again.
-    let resetCount = 0;
     queue.forEach(item => {
       if (item.status === 'processing') {
         item.status = 'pending';
         item.error = null;
-        resetCount++;
       }
     });
-    if (resetCount > 0) renderQueue();
+    // Always re-render (not just when a row needed resetting) so drag-to-reorder
+    // re-enables on pending rows now that no run is active.
+    renderQueue();
 
     els.runBtn.textContent = 'Start queue';
     els.runBtn.classList.remove('stop');
