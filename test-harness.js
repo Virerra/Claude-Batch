@@ -1064,6 +1064,101 @@ async function testReorderDisabledDuringRun() {
 }
 
 // ---------------------------------------------------------------------
+// TEST 27: Auto-scroll engine activates while dragging and scrolls the page
+// when the cursor nears the top or bottom viewport edge, in the correct
+// direction, and does nothing in the middle of the viewport.
+// ---------------------------------------------------------------------
+async function testAutoScrollDuringDrag() {
+  const dom = await freshDom();
+  setVal(dom, 'prompt-input', Array.from({ length: 5 }, (_, i) => `prompt ${i}`).join('\n'));
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  const scrollCalls = [];
+  dom.window.scrollBy = (x, y) => scrollCalls.push(y);
+  Object.defineProperty(dom.window, 'innerHeight', { value: 800, configurable: true });
+
+  const firstRow = dom.window.document.querySelector('.row');
+  const dragStartEvent = new dom.window.Event('dragstart', { bubbles: true });
+  dragStartEvent.dataTransfer = { effectAllowed: '', setData: () => {} };
+  firstRow.dispatchEvent(dragStartEvent);
+
+  // Cursor near the TOP edge (clientY = 20, well within the 90px edge zone)
+  // should trigger upward scrolling (negative y).
+  let dragOverEvent = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+  Object.defineProperty(dragOverEvent, 'clientY', { value: 20 });
+  dom.window.document.dispatchEvent(dragOverEvent);
+  await sleep(60); // let a couple of rAF frames run
+
+  assert(scrollCalls.length > 0, 'expected scrollBy to be called when dragging near the top edge');
+  assert(scrollCalls.every(y => y < 0), `expected all scroll calls near the top edge to be upward (negative), got: ${scrollCalls.join(', ')}`);
+
+  scrollCalls.length = 0; // reset
+
+  // Cursor near the BOTTOM edge (clientY = 790, within 90px of innerHeight=800)
+  // should trigger downward scrolling (positive y).
+  dragOverEvent = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+  Object.defineProperty(dragOverEvent, 'clientY', { value: 790 });
+  dom.window.document.dispatchEvent(dragOverEvent);
+  await sleep(60);
+
+  assert(scrollCalls.length > 0, 'expected scrollBy to be called when dragging near the bottom edge');
+  assert(scrollCalls.every(y => y > 0), `expected all scroll calls near the bottom edge to be downward (positive), got: ${scrollCalls.join(', ')}`);
+
+  scrollCalls.length = 0;
+
+  // Cursor in the MIDDLE of the viewport (clientY = 400, nowhere near either
+  // edge) should trigger no scrolling at all.
+  dragOverEvent = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+  Object.defineProperty(dragOverEvent, 'clientY', { value: 400 });
+  dom.window.document.dispatchEvent(dragOverEvent);
+  await sleep(60);
+
+  assert(scrollCalls.length === 0, `expected no scrolling while cursor is in the middle of the viewport, got ${scrollCalls.length} calls`);
+
+  const dragEndEvent = new dom.window.Event('dragend', { bubbles: true });
+  firstRow.dispatchEvent(dragEndEvent);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 28: Auto-scroll engine stops cleanly on dragend -- no lingering rAF
+// loop continuing to call scrollBy after the drag is over.
+// ---------------------------------------------------------------------
+async function testAutoScrollStopsOnDragEnd() {
+  const dom = await freshDom();
+  setVal(dom, 'prompt-input', 'a\nb\nc');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  const scrollCalls = [];
+  dom.window.scrollBy = (x, y) => scrollCalls.push(y);
+  Object.defineProperty(dom.window, 'innerHeight', { value: 800, configurable: true });
+
+  const firstRow = dom.window.document.querySelector('.row');
+  const dragStartEvent = new dom.window.Event('dragstart', { bubbles: true });
+  dragStartEvent.dataTransfer = { effectAllowed: '', setData: () => {} };
+  firstRow.dispatchEvent(dragStartEvent);
+
+  const dragOverEvent = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+  Object.defineProperty(dragOverEvent, 'clientY', { value: 10 }); // top edge, triggers scrolling
+  dom.window.document.dispatchEvent(dragOverEvent);
+  await sleep(60);
+  assert(scrollCalls.length > 0, 'setup: expected scrolling to be active before dragend');
+
+  const dragEndEvent = new dom.window.Event('dragend', { bubbles: true });
+  firstRow.dispatchEvent(dragEndEvent);
+
+  scrollCalls.length = 0;
+  await sleep(150); // well past several rAF frames
+
+  assert(scrollCalls.length === 0, `expected zero scroll calls after dragend, but the loop kept running and produced ${scrollCalls.length} more calls`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
 async function main() {
   const tests = [
     ['Add prompts (bulk, blank-line filtering, trimming)', testAddPrompts],
@@ -1093,6 +1188,8 @@ async function main() {
     ['Drag reorder: drop before target inserts before, not after', testDragReorderDropBefore],
     ['Non-pending rows are not draggable', testNonPendingRowsNotDraggable],
     ['Reordering disabled during an active run, re-enabled after stop', testReorderDisabledDuringRun],
+    ['Auto-scroll activates near viewport edges in correct direction', testAutoScrollDuringDrag],
+    ['Auto-scroll stops cleanly on dragend, no lingering rAF loop', testAutoScrollStopsOnDragEnd],
   ];
 
   for (const [name, fn] of tests) {
