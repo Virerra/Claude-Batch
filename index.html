@@ -821,6 +821,8 @@
   let idCounter = 1;
   let inFlightController = null; // AbortController for the current fetch, so Stop can cancel it
   let draggedId = null; // id of the queue item currently being dragged, or null
+  let autoScrollRAF = null; // requestAnimationFrame handle for drag-to-edge auto-scroll
+  let lastDragClientY = null;
   const MAX_RETRIES = 3;
   const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504, 529]);
 
@@ -1201,6 +1203,50 @@
     resetFileState();
   });
 
+  // ---------- Drag-to-reorder auto-scroll ----------
+  // The native HTML5 drag API does not auto-scroll the page when you drag near
+  // a viewport edge, which makes reordering painful in a long queue (drag,
+  // manually scroll, drag again, repeat). This fills that gap: while a drag is
+  // active, a rAF loop watches the cursor's distance from the top/bottom of the
+  // viewport and scrolls the page accordingly, faster the closer to the edge.
+  const SCROLL_EDGE_ZONE = 90; // px from viewport edge that triggers scrolling
+  const SCROLL_MAX_SPEED = 18; // px scrolled per frame at the very edge
+
+  document.addEventListener('dragover', (e) => {
+    if (draggedId === null) return;
+    lastDragClientY = e.clientY;
+  });
+
+  function startAutoScroll(){
+    stopAutoScroll(); // guard against a stray loop already running
+    function step(){
+      if (draggedId === null) { autoScrollRAF = null; return; }
+      if (lastDragClientY !== null) {
+        const viewportHeight = window.innerHeight;
+        const distFromTop = lastDragClientY;
+        const distFromBottom = viewportHeight - lastDragClientY;
+
+        if (distFromTop < SCROLL_EDGE_ZONE) {
+          const speed = SCROLL_MAX_SPEED * (1 - distFromTop / SCROLL_EDGE_ZONE);
+          window.scrollBy(0, -speed);
+        } else if (distFromBottom < SCROLL_EDGE_ZONE) {
+          const speed = SCROLL_MAX_SPEED * (1 - distFromBottom / SCROLL_EDGE_ZONE);
+          window.scrollBy(0, speed);
+        }
+      }
+      autoScrollRAF = requestAnimationFrame(step);
+    }
+    autoScrollRAF = requestAnimationFrame(step);
+  }
+
+  function stopAutoScroll(){
+    if (autoScrollRAF !== null) {
+      cancelAnimationFrame(autoScrollRAF);
+      autoScrollRAF = null;
+    }
+    lastDragClientY = null;
+  }
+
   // ---------- Rendering the queue ----------
   function renderQueue(){
     els.emptyState.style.display = queue.length === 0 ? 'block' : 'none';
@@ -1226,11 +1272,13 @@
           e.dataTransfer.effectAllowed = 'move';
           // Firefox requires setData to be called for drag to initiate at all.
           try { e.dataTransfer.setData('text/plain', String(item.id)); } catch(err) {}
+          startAutoScroll();
         });
         row.addEventListener('dragend', () => {
           draggedId = null;
           row.classList.remove('dragging');
           Array.from(els.queueList.querySelectorAll('.row')).forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+          stopAutoScroll();
         });
         row.addEventListener('dragover', (e) => {
           if (draggedId === null || draggedId === item.id) return;
