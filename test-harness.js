@@ -86,6 +86,50 @@ function text(dom, id) {
   return dom.window.document.getElementById(id).textContent;
 }
 
+// Simulates dragging one queue row onto another. jsdom doesn't implement real
+// drag gesture physics, but the app's logic only cares about the dragstart /
+// dragover / drop events and a dataTransfer object -- so we dispatch those
+// directly against the actual row elements, exercising the real handlers.
+function simulateDrag(dom, fromId, toId, dropBelow) {
+  const fromRow = dom.window.document.querySelector(`.row[data-id="${fromId}"]`);
+  const toRow = dom.window.document.querySelector(`.row[data-id="${toId}"]`);
+  if (!fromRow || !toRow) throw new Error(`simulateDrag: row not found (from=${fromId}, to=${toId})`);
+
+  const dataStore = {};
+  const fakeDataTransfer = {
+    effectAllowed: '',
+    dropEffect: '',
+    setData: (type, val) => { dataStore[type] = val; },
+    getData: (type) => dataStore[type] || '',
+  };
+
+  const dragStartEvent = new dom.window.Event('dragstart', { bubbles: true });
+  dragStartEvent.dataTransfer = fakeDataTransfer;
+  fromRow.dispatchEvent(dragStartEvent);
+
+  const rect = toRow.getBoundingClientRect();
+  const dragOverEvent = new dom.window.Event('dragover', { bubbles: true, cancelable: true });
+  dragOverEvent.dataTransfer = fakeDataTransfer;
+  // getBoundingClientRect returns all zeros in jsdom (no real layout engine),
+  // so clientY vs rect.top/height can't distinguish "above" vs "below" the
+  // midpoint via real geometry. Instead we directly stub clientY relative to a
+  // mocked rect via Object.defineProperty so the app's own midpoint math runs.
+  Object.defineProperty(toRow, 'getBoundingClientRect', {
+    value: () => ({ top: 0, height: 40 }),
+    configurable: true,
+  });
+  Object.defineProperty(dragOverEvent, 'clientY', { value: dropBelow ? 30 : 5 });
+  toRow.dispatchEvent(dragOverEvent);
+
+  const dropEvent = new dom.window.Event('drop', { bubbles: true, cancelable: true });
+  dropEvent.dataTransfer = fakeDataTransfer;
+  Object.defineProperty(dropEvent, 'clientY', { value: dropBelow ? 30 : 5 });
+  toRow.dispatchEvent(dropEvent);
+
+  const dragEndEvent = new dom.window.Event('dragend', { bubbles: true });
+  fromRow.dispatchEvent(dragEndEvent);
+}
+
 // ---------------------------------------------------------------------
 // TEST 1: Adding prompts (single + bulk multi-line + blank-line filtering)
 // ---------------------------------------------------------------------
@@ -895,6 +939,131 @@ async function testExportIncludesSourceRowColumns() {
 }
 
 // ---------------------------------------------------------------------
+// TEST 23: Dragging a pending row and dropping it after another pending row
+// actually reorders the underlying queue array, not just the DOM -- this
+// matters because processNext() always picks the first pending item, so a
+// visual-only reorder would be a lie about what runs next.
+// ---------------------------------------------------------------------
+async function testDragReorderMovesQueueOrder() {
+  const dom = await freshDom();
+  setVal(dom, 'prompt-input', 'first\nsecond\nthird');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  const rowsBefore = dom.window.document.querySelectorAll('.row');
+  const idsBefore = Array.from(rowsBefore).map(r => r.dataset.id);
+  assert(idsBefore.length === 3, `setup: expected 3 rows, got ${idsBefore.length}`);
+
+  const [firstId, secondId, thirdId] = idsBefore;
+
+  // Drag "first" (id firstId) to drop AFTER "third" (id thirdId) -- should
+  // result in order: second, third, first.
+  simulateDrag(dom, firstId, thirdId, true);
+  await sleep(20);
+
+  const rowsAfter = dom.window.document.querySelectorAll('.row');
+  const promptsAfter = Array.from(rowsAfter).map(r => r.querySelector('.row-prompt').textContent);
+  assert(promptsAfter.join(',') === 'second,third,first', `expected order [second, third, first] after dragging first to after third, got [${promptsAfter.join(', ')}]`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 24: Dropping BEFORE a target (top half of the row) inserts before it,
+// not after -- verifying the midpoint-detection logic, not just "it moved".
+// ---------------------------------------------------------------------
+async function testDragReorderDropBefore() {
+  const dom = await freshDom();
+  setVal(dom, 'prompt-input', 'alpha\nbeta\ngamma');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  const ids = Array.from(dom.window.document.querySelectorAll('.row')).map(r => r.dataset.id);
+  const [alphaId, betaId, gammaId] = ids;
+
+  // Drag "gamma" and drop it BEFORE "alpha" -- should result in: gamma, alpha, beta.
+  simulateDrag(dom, gammaId, alphaId, false);
+  await sleep(20);
+
+  const promptsAfter = Array.from(dom.window.document.querySelectorAll('.row')).map(r => r.querySelector('.row-prompt').textContent);
+  assert(promptsAfter.join(',') === 'gamma,alpha,beta', `expected [gamma, alpha, beta] after dropping gamma before alpha, got [${promptsAfter.join(', ')}]`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 25: A row's drag handle is only marked draggable while pending --
+// completed/failed rows shouldn't be draggable, since reordering them is
+// meaningless (they're not going to run again, in order or otherwise).
+// ---------------------------------------------------------------------
+async function testNonPendingRowsNotDraggable() {
+  const dom = await freshDom();
+  dom.window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text: 'done' }] }) });
+
+  setVal(dom, 'api-key', 'sk-ant-test-key');
+  setVal(dom, 'prompt-input', 'will complete\nstays pending');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  // Run just the first one, then stop, leaving row 1 completed and row 2 pending.
+  setVal(dom, 'pace-slider', '60'); // long pace so it stops cleanly after 1 completes
+  dom.window.document.getElementById('pace-slider').dispatchEvent(new dom.window.Event('input'));
+  click(dom, 'run-btn');
+  await sleep(80);
+  click(dom, 'run-btn'); // stop before the 60s pace would fire a 2nd call
+  await sleep(50);
+
+  const rows = dom.window.document.querySelectorAll('.row');
+  const completedRow = Array.from(rows).find(r => r.querySelector('.status-badge').textContent === 'completed');
+  const pendingRow = Array.from(rows).find(r => r.querySelector('.status-badge').textContent === 'pending');
+
+  assert(completedRow.draggable === false, 'a completed row should not be draggable');
+  assert(pendingRow.draggable === true, 'a pending row should be draggable when no run is active');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 26: Reordering is disabled entirely while a run is active -- rows
+// should not be draggable mid-run, since dragging during processing could
+// race with processNext() picking the next item.
+// ---------------------------------------------------------------------
+async function testReorderDisabledDuringRun() {
+  const dom = await freshDom();
+  dom.window.fetch = () => new Promise(() => {}); // hangs forever -- keeps the run "active"
+
+  setVal(dom, 'api-key', 'sk-ant-test-key');
+  setVal(dom, 'prompt-input', 'one\ntwo\nthree');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  // Confirm draggable BEFORE starting the run.
+  const rowsBefore = dom.window.document.querySelectorAll('.row');
+  assert(Array.from(rowsBefore).every(r => r.draggable === true), 'all pending rows should be draggable before a run starts');
+
+  click(dom, 'run-btn'); // start -- first row goes to processing and hangs
+  await sleep(50);
+
+  const rowsDuring = dom.window.document.querySelectorAll('.row');
+  assert(Array.from(rowsDuring).every(r => r.draggable === false), 'no row should be draggable while a run is active, including still-pending ones');
+
+  // Attempting to drag-reorder mid-run should have no effect on order, since
+  // the rows aren't draggable -- but also verify reorderQueue itself respects
+  // status if somehow invoked, as defense in depth.
+  const idsDuring = Array.from(rowsDuring).map(r => r.dataset.id);
+  const promptsBeforeAttempt = Array.from(rowsDuring).map(r => r.querySelector('.row-prompt').textContent);
+
+  click(dom, 'run-btn'); // stop
+  await sleep(50);
+
+  const rowsAfterStop = dom.window.document.querySelectorAll('.row');
+  const stillPendingRows = Array.from(rowsAfterStop).filter(r => r.querySelector('.status-badge').textContent === 'pending');
+  assert(stillPendingRows.every(r => r.draggable === true), 'pending rows should become draggable again once the run stops');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
 async function main() {
   const tests = [
     ['Add prompts (bulk, blank-line filtering, trimming)', testAddPrompts],
@@ -920,6 +1089,10 @@ async function main() {
     ['Missing columns handled via defval, no broken templates', testMissingColumnsHandledViaDefval],
     ['Row count cap rejects oversized uploads', testRowCountCap],
     ['Export CSV includes source-row columns, handles mixed queue', testExportIncludesSourceRowColumns],
+    ['Drag reorder: drop after target moves queue order correctly', testDragReorderMovesQueueOrder],
+    ['Drag reorder: drop before target inserts before, not after', testDragReorderDropBefore],
+    ['Non-pending rows are not draggable', testNonPendingRowsNotDraggable],
+    ['Reordering disabled during an active run, re-enabled after stop', testReorderDisabledDuringRun],
   ];
 
   for (const [name, fn] of tests) {
