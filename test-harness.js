@@ -529,6 +529,69 @@ async function testRetryAfterHeaderHonored() {
 }
 
 // ---------------------------------------------------------------------
+// TEST 14: Regression test for the reported bug — stopping mid-flight left
+// a row permanently stuck on "processing" even after clicking Start again,
+// because nothing ever reset its status back to "pending". This reproduces
+// that exact sequence: start a run, stop while a request is in flight
+// (before it resolves), then verify the row recovered to "pending" and a
+// second Start actually picks it back up and completes it.
+// ---------------------------------------------------------------------
+async function testStuckProcessingRowRecoversAfterStop() {
+  const dom = await freshDom();
+  let resolveCall;
+  let callCount = 0;
+  dom.window.fetch = (url, opts) => {
+    callCount++;
+    if (callCount === 1) {
+      // First call: never resolves on its own, simulating a slow in-flight
+      // request that gets aborted by Stop.
+      return new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      });
+    }
+    // Second call (after resuming): resolves normally.
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text: 'finally done' }] }) });
+  };
+
+  setVal(dom, 'api-key', 'sk-ant-test-key');
+  setVal(dom, 'prompt-input', 'the one that gets interrupted');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  click(dom, 'run-btn'); // start
+  await sleep(50); // call is now in-flight, frozen
+
+  const badgeBeforeStop = dom.window.document.querySelector('.status-badge');
+  assert(badgeBeforeStop.textContent === 'processing', `setup: expected row to be 'processing' before stop, got "${badgeBeforeStop.textContent}"`);
+
+  click(dom, 'run-btn'); // stop, mid-flight — this is the exact user action that triggered the bug
+  await sleep(100);
+
+  // THE CORE REGRESSION CHECK: the row must NOT be stuck on "processing".
+  const badgeAfterStop = dom.window.document.querySelector('.status-badge');
+  assert(badgeAfterStop.textContent === 'pending', `BUG REPRODUCED: row stuck on "${badgeAfterStop.textContent}" after stopping mid-flight — expected it to recover to 'pending'`);
+  assert(text(dom, 'stat-pending') === '1', `expected stat-pending to show 1 after recovery, got ${text(dom, 'stat-pending')}`);
+  assert(text(dom, 'stat-processing') === '0', `expected stat-processing to show 0 after recovery, got ${text(dom, 'stat-processing')}`);
+
+  // Now verify resuming actually works — this is the user's full scenario:
+  // stop, then start again, and the previously-stuck row should complete normally.
+  const runBtn = dom.window.document.getElementById('run-btn');
+  assert(runBtn.disabled === false, 'Start queue button should be enabled again after recovery (key + pending item present)');
+
+  click(dom, 'run-btn'); // resume
+  await sleep(50);
+
+  assert(text(dom, 'stat-completed') === '1', `expected the previously-stuck row to complete after resuming, got completed=${text(dom, 'stat-completed')}`);
+  assert(callCount === 2, `expected exactly 2 fetch attempts total (1 aborted + 1 successful retry), got ${callCount}`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
 async function main() {
   const tests = [
     ['Add prompts (bulk, blank-line filtering, trimming)', testAddPrompts],
@@ -545,6 +608,7 @@ async function main() {
     ['Retry-failed-row link requeues a failed item', testRetryFailedRow],
     ['Non-retryable error (401) fails fast, no retry delay', testNonRetryableErrorFailsFast],
     ['retry-after header is honored over default backoff', testRetryAfterHeaderHonored],
+    ['REGRESSION: stuck-processing row recovers after Stop mid-flight', testStuckProcessingRowRecoversAfterStop],
   ];
 
   for (const [name, fn] of tests) {
