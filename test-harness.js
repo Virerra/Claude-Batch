@@ -30,6 +30,48 @@ async function freshDom() {
   return dom;
 }
 
+// The real SheetJS script can't load from the CDN in this sandboxed test
+// environment, so we inject a mock that matches its real documented API shape:
+// XLSX.read(arrayBuffer, {type:'array'}) -> workbook, and
+// XLSX.utils.sheet_to_json(sheet, {defval, raw}) -> array of row objects.
+// `rows` here is the array of plain row objects the mock should return.
+function installMockXLSX(dom, rows, sheetNames) {
+  sheetNames = sheetNames || ['Sheet1'];
+  dom.window.XLSX = {
+    read: (data, opts) => {
+      const sheets = {};
+      sheetNames.forEach(name => { sheets[name] = { __mockRows: rows }; });
+      return { SheetNames: sheetNames, Sheets: sheets };
+    },
+    utils: {
+      sheet_to_json: (sheet, opts) => {
+        const defval = opts && Object.prototype.hasOwnProperty.call(opts, 'defval') ? opts.defval : undefined;
+        if (defval === undefined) return sheet.__mockRows;
+        // Apply defval to any row missing a key that other rows have, same as
+        // real SheetJS does when a column is blank in some rows.
+        const allKeys = new Set();
+        sheet.__mockRows.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+        return sheet.__mockRows.map(r => {
+          const filled = {};
+          allKeys.forEach(k => { filled[k] = Object.prototype.hasOwnProperty.call(r, k) ? r[k] : defval; });
+          return filled;
+        });
+      },
+    },
+  };
+}
+
+// Simulates a user selecting a file via the file input. jsdom's FileReader
+// doesn't actually need real file bytes since XLSX.read is mocked above --
+// we just need the file's name to pass the .csv/.xlsx extension check and
+// trigger the change event the app listens for.
+function simulateFileUpload(dom, filename) {
+  const fileInput = dom.window.document.getElementById('file-input');
+  const file = new dom.window.File(['mock file content'], filename, { type: 'application/octet-stream' });
+  Object.defineProperty(fileInput, 'files', { value: [file], configurable: true });
+  fileInput.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+}
+
 function setVal(dom, id, value) {
   const el = dom.window.document.getElementById(id);
   el.value = value;
@@ -592,6 +634,267 @@ async function testStuckProcessingRowRecoversAfterStop() {
 }
 
 // ---------------------------------------------------------------------
+// TEST 15: Mode toggle switches the visible panel correctly.
+// ---------------------------------------------------------------------
+async function testModeToggle() {
+  const dom = await freshDom();
+  const textPanel = dom.window.document.getElementById('text-mode-panel');
+  const filePanel = dom.window.document.getElementById('file-mode-panel');
+
+  assert(textPanel.style.display !== 'none', 'text mode panel should be visible by default');
+  assert(filePanel.style.display === 'none', 'file mode panel should be hidden by default');
+
+  click(dom, 'mode-file-btn');
+  assert(filePanel.style.display !== 'none', 'file mode panel should show after clicking "From spreadsheet"');
+  assert(textPanel.style.display === 'none', 'text mode panel should hide after switching to file mode');
+
+  click(dom, 'mode-text-btn');
+  assert(textPanel.style.display !== 'none', 'text mode panel should show again after switching back');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 16: Uploading a CSV/Excel file parses rows and headers, surfaces
+// column pills, and clicking a pill inserts a {placeholder} into the template.
+// ---------------------------------------------------------------------
+async function testFileUploadAndColumnPills() {
+  const dom = await freshDom();
+  installMockXLSX(dom, [
+    { Name: 'Jane', Status: 'Open', Notes: 'Printer jammed' },
+    { Name: 'Bob', Status: 'Closed', Notes: 'Password reset' },
+  ]);
+
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'tickets.csv');
+  await sleep(50);
+
+  const templateBlock = dom.window.document.getElementById('file-template-block');
+  assert(templateBlock.style.display !== 'none', 'template block should appear after a successful upload');
+
+  const pills = dom.window.document.querySelectorAll('.column-pill');
+  const pillLabels = Array.from(pills).map(p => p.textContent);
+  assert(pillLabels.includes('Name') && pillLabels.includes('Status') && pillLabels.includes('Notes'),
+    `expected column pills for Name/Status/Notes, got: ${pillLabels.join(', ')}`);
+
+  assert(text(dom, 'file-row-count').includes('2'), `expected row count to mention 2 rows, got "${text(dom, 'file-row-count')}"`);
+
+  // Clear the auto-filled default template, then click a pill and confirm it inserts correctly.
+  const templateBox = dom.window.document.getElementById('row-template');
+  templateBox.value = 'Ticket: ';
+  templateBox.setSelectionRange(templateBox.value.length, templateBox.value.length);
+
+  const notesPill = Array.from(pills).find(p => p.textContent === 'Notes');
+  notesPill.click();
+  assert(templateBox.value === 'Ticket: {Notes}', `expected pill click to insert {Notes}, got "${templateBox.value}"`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 17: Template preview reflects row 1's actual data, live as you type.
+// ---------------------------------------------------------------------
+async function testTemplatePreviewLive() {
+  const dom = await freshDom();
+  installMockXLSX(dom, [
+    { Customer: 'Acme Corp', Issue: 'Login broken' },
+    { Customer: 'Globex', Issue: 'Slow load times' },
+  ]);
+
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'support.xlsx');
+  await sleep(50);
+
+  setVal(dom, 'row-template', 'Summarize this ticket from {Customer}: {Issue}');
+  await sleep(20);
+
+  const preview = dom.window.document.getElementById('template-preview').textContent;
+  assert(preview.includes('Summarize this ticket from Acme Corp: Login broken'),
+    `expected preview to show row 1 filled in, got: "${preview}"`);
+  assert(!preview.includes('Globex'), 'preview should only show row 1, not other rows');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 18: Adding rows to the queue generates one queue item per row, each
+// with the template correctly filled in and the original row data preserved
+// (for export) without being rendered in the visible prompt text.
+// ---------------------------------------------------------------------
+async function testAddRowsToQueue() {
+  const dom = await freshDom();
+  installMockXLSX(dom, [
+    { Name: 'Jane', Notes: 'Printer jammed' },
+    { Name: 'Bob', Notes: 'Password reset' },
+    { Name: 'Lee', Notes: 'VPN down' },
+  ]);
+
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'tickets.csv');
+  await sleep(50);
+
+  setVal(dom, 'row-template', 'Help {Name} with: {Notes}');
+  await sleep(20);
+  click(dom, 'add-rows-btn');
+  await sleep(20);
+
+  const rows = dom.window.document.querySelectorAll('.row');
+  assert(rows.length === 3, `expected 3 queue rows after adding from a 3-row file, got ${rows.length}`);
+
+  const promptTexts = Array.from(rows).map(r => r.querySelector('.row-prompt').textContent);
+  assert(promptTexts.includes('Help Jane with: Printer jammed'), `expected filled template for Jane, got: ${promptTexts.join(' | ')}`);
+  assert(promptTexts.includes('Help Bob with: Password reset'), `expected filled template for Bob, got: ${promptTexts.join(' | ')}`);
+
+  // After adding, the file panel should reset (ready for a new upload) rather
+  // than leaving stale state that could cause double-adding.
+  const templateBlock = dom.window.document.getElementById('file-template-block');
+  assert(templateBlock.style.display === 'none', 'file template block should reset after rows are added to the queue');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 19: Unsupported file types and empty sheets are rejected with a
+// clear error rather than silently failing or crashing.
+// ---------------------------------------------------------------------
+async function testFileValidationErrors() {
+  const dom = await freshDom();
+
+  // Unsupported extension
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'notes.pdf');
+  await sleep(30);
+  let err = dom.window.document.getElementById('file-error');
+  assert(err.style.display !== 'none' && err.textContent.toLowerCase().includes('unsupported'),
+    `expected an "unsupported file type" error for a .pdf, got: "${err.textContent}"`);
+
+  // Empty sheet (XLSX present, but zero data rows)
+  installMockXLSX(dom, []);
+  simulateFileUpload(dom, 'empty.csv');
+  await sleep(30);
+  err = dom.window.document.getElementById('file-error');
+  assert(err.style.display !== 'none' && err.textContent.toLowerCase().includes('empty'),
+    `expected an "empty sheet" error for a file with zero rows, got: "${err.textContent}"`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 20: A sheet with inconsistent columns across rows (some cells blank
+// in some rows) still produces every row with every header key, via defval,
+// so a template referencing any column never silently breaks on some rows.
+// ---------------------------------------------------------------------
+async function testMissingColumnsHandledViaDefval() {
+  const dom = await freshDom();
+  // Mock XLSX.utils.sheet_to_json with defval will backfill missing keys --
+  // simulate a row that's missing the "Notes" key entirely (blank cell in Excel).
+  installMockXLSX(dom, [
+    { Name: 'Jane', Notes: 'Printer jammed' },
+    { Name: 'Bob' }, // no Notes key at all, like a blank cell
+  ]);
+
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'tickets.csv');
+  await sleep(50);
+
+  setVal(dom, 'row-template', '{Name}: {Notes}');
+  await sleep(20);
+  click(dom, 'add-rows-btn');
+  await sleep(20);
+
+  const rows = dom.window.document.querySelectorAll('.row');
+  const promptTexts = Array.from(rows).map(r => r.querySelector('.row-prompt').textContent);
+  assert(promptTexts.includes('Bob: '), `expected Bob's missing Notes to render as empty string via defval, not break the template. Got: ${promptTexts.join(' | ')}`);
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 21: Row count cap rejects an oversized upload with a clear message
+// instead of attempting to queue thousands of rows and freezing the tab.
+// ---------------------------------------------------------------------
+async function testRowCountCap() {
+  const dom = await freshDom();
+  const tooMany = Array.from({ length: 5001 }, (_, i) => ({ Name: `Row ${i}` }));
+  installMockXLSX(dom, tooMany);
+
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'huge.csv');
+  await sleep(80);
+
+  const err = dom.window.document.getElementById('file-error');
+  assert(err.style.display !== 'none' && err.textContent.includes('5,001'),
+    `expected a row-cap error mentioning the count, got: "${err.textContent}"`);
+
+  const templateBlock = dom.window.document.getElementById('file-template-block');
+  assert(templateBlock.style.display === 'none', 'template block should stay hidden when the row cap is exceeded');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
+// TEST 22: Exported CSV includes the original spreadsheet columns alongside
+// the prompt/response, correctly merging columns even when the queue has a
+// mix of spreadsheet-sourced and manually-typed rows.
+// ---------------------------------------------------------------------
+async function testExportIncludesSourceRowColumns() {
+  const dom = await freshDom();
+  dom.window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text: 'handled' }] }) });
+
+  installMockXLSX(dom, [{ Name: 'Jane', Notes: 'Printer jammed' }]);
+  click(dom, 'mode-file-btn');
+  simulateFileUpload(dom, 'tickets.csv');
+  await sleep(50);
+  setVal(dom, 'row-template', 'Help {Name}: {Notes}');
+  await sleep(20);
+  click(dom, 'add-rows-btn');
+  await sleep(20);
+
+  // Also add a manually-typed prompt with no source row, to confirm mixed export works.
+  click(dom, 'mode-text-btn');
+  setVal(dom, 'prompt-input', 'a manually typed prompt');
+  click(dom, 'add-btn');
+  await sleep(20);
+
+  setVal(dom, 'api-key', 'sk-ant-test-key');
+  setVal(dom, 'pace-slider', '1');
+  dom.window.document.getElementById('pace-slider').dispatchEvent(new dom.window.Event('input'));
+  click(dom, 'run-btn');
+  await sleep(1200); // let both rows complete (1s pace between them)
+
+  let capturedBlobText = null;
+  dom.window.URL.createObjectURL = (blob) => {
+    // jsdom Blob doesn't expose text() synchronously in all versions; read via FileReader-free path
+    capturedBlobText = blob;
+    return 'blob:mock';
+  };
+  dom.window.URL.revokeObjectURL = () => {};
+
+  click(dom, 'export-csv');
+  await sleep(20);
+
+  assert(capturedBlobText !== null, 'CSV export should produce a Blob');
+  // Read the Blob's content back out (jsdom Blob supports .text() as of modern versions)
+  let csvContent = '';
+  try {
+    csvContent = await capturedBlobText.text();
+  } catch (e) {
+    // Fallback for older jsdom Blob shim
+    csvContent = await new Promise((resolve) => {
+      const reader = new dom.window.FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsText(capturedBlobText);
+    });
+  }
+
+  assert(csvContent.includes('Name') && csvContent.includes('Notes'), `expected CSV header to include source columns Name/Notes, got: ${csvContent.split('\n')[0]}`);
+  assert(csvContent.includes('Jane') && csvContent.includes('Printer jammed'), `expected CSV to include the original row values, got:\n${csvContent}`);
+  assert(csvContent.includes('a manually typed prompt'), 'expected CSV to also include the manually-typed prompt with no source row');
+
+  dom.window.close();
+}
+
+// ---------------------------------------------------------------------
 async function main() {
   const tests = [
     ['Add prompts (bulk, blank-line filtering, trimming)', testAddPrompts],
@@ -609,6 +912,14 @@ async function main() {
     ['Non-retryable error (401) fails fast, no retry delay', testNonRetryableErrorFailsFast],
     ['retry-after header is honored over default backoff', testRetryAfterHeaderHonored],
     ['REGRESSION: stuck-processing row recovers after Stop mid-flight', testStuckProcessingRowRecoversAfterStop],
+    ['Input mode toggle switches panels', testModeToggle],
+    ['File upload parses rows, shows column pills, pill click inserts placeholder', testFileUploadAndColumnPills],
+    ['Template preview reflects row 1 live as you type', testTemplatePreviewLive],
+    ['Add rows to queue: one queue item per row, correctly filled', testAddRowsToQueue],
+    ['File validation: unsupported type and empty sheet errors', testFileValidationErrors],
+    ['Missing columns handled via defval, no broken templates', testMissingColumnsHandledViaDefval],
+    ['Row count cap rejects oversized uploads', testRowCountCap],
+    ['Export CSV includes source-row columns, handles mixed queue', testExportIncludesSourceRowColumns],
   ];
 
   for (const [name, fn] of tests) {
